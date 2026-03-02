@@ -2,8 +2,6 @@
 
 High-precision 3D audio engine for Unity powered by Wave Field Synthesis.
 
-![Header](docs/images/AT_WAVESPACE_LOGO.jpg)
-
 ---
 
 ## ✨ Overview
