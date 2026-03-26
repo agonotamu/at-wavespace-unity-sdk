@@ -44,7 +44,7 @@ public class At_MasterOutput : MonoBehaviour
     public float  maxDistanceForDelay;
     public bool   isBinauralVirtualization;
     public bool   isSimpleBinauralSpat;
-    public bool   isPrevSimpleBinauralSpat;
+    [NonSerialized] public bool isPrevSimpleBinauralSpat;
     public bool   isNearFieldCorrection;
     public bool   isPrevIsNearFieldCorrection;
     public float  hrtfDistance;
@@ -142,6 +142,7 @@ public class At_MasterOutput : MonoBehaviour
         m_prevIsWfsGain             = !outputState.isWfsGain;
         m_prevIsActiveSpeakersMinMax = !outputState.isActiveSpeakersMinMax;
         m_prevIsHrtfTruncated       = !outputState.isHrtfTruncated;       // force send
+        isPrevSimpleBinauralSpat    = !isSimpleBinauralSpat;              // force send
 
         meters = new float[outputChannelCount];
 
@@ -284,13 +285,10 @@ public class At_MasterOutput : MonoBehaviour
             else
                 LoadDefaultHRTF();
 
-            if (isSimpleBinauralSpat)
-            {
-                if (AT_WS_setIsSimpleBinauralSpat(true) == AUDIO_PLUGIN_OK)
-                    Debug.Log("[AudioPlugin] Simple binaural mode enabled");
-                else
-                    Debug.LogError("[AudioPlugin] Failed to enable simple binaural mode");
-            }
+            if (AT_WS_setIsSimpleBinauralSpat(isSimpleBinauralSpat) == AUDIO_PLUGIN_OK)
+                Debug.Log($"[AudioPlugin] Simple binaural mode set to {isSimpleBinauralSpat}");
+            else
+                Debug.LogError($"[AudioPlugin] Failed to set simple binaural mode to {isSimpleBinauralSpat}");
         }
 
         if (result != AUDIO_PLUGIN_OK)

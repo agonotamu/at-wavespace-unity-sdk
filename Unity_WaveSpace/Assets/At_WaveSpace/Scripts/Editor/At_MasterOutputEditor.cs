@@ -154,7 +154,10 @@ public class At_MasterOutputEditor : Editor
             }
         }
 
-        if (cachedDevices == null || devicesNeedRefresh)
+        // In Play mode the engine is already running — skip the device scan entirely.
+        // AT_WS_waitForDeviceScan() is a blocking call that freezes the main thread
+        // for up to 10 s, which is the cause of the Inspector freeze on Windows.
+        if (!Application.isPlaying && (cachedDevices == null || devicesNeedRefresh))
         {
             RefreshDeviceList();
             devicesNeedRefresh = false;

@@ -463,7 +463,7 @@ namespace AT
         // ============================================================================
 
         /// True when simple binaural mode is active
-        bool m_isSimpleBinauralSpat;
+        bool m_isSimpleBinauralSpat = false;
 
         /// One dedicated HRTFProcessor per player (simple binaural mode)
         std::vector<std::unique_ptr<HRTFProcessor>> m_puSimpleBinauralPlayerProcessors;

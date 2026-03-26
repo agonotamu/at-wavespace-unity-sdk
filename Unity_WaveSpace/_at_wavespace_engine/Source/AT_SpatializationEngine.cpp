@@ -27,6 +27,7 @@ namespace AT
         #endif
 
         m_isBinauralVirtualization = false;
+        m_isSimpleBinauralSpat     = false;
 
         // Zero-fill static arrays to avoid undefined values before prepareToPlay()
         std::memset(m_metersArray,                 0, sizeof(m_metersArray));
