@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<JUCERPROJECT id="GuWW8P" name="AT_SPAT_AudioEngineLib" projectType="dll" useAppConfig="0"
+              addUsingNamespaceToJuceHeader="0" jucerFormatVersion="1" bundleIdentifier="com.antoinegonot.audioEngineLib">
+  <MAINGROUP id="A6TLB8" name="AT_SPAT_AudioEngineLib">
+    <GROUP id="{58C27E55-C5E5-7B08-1465-556C3A56F84E}" name="Source">
+      <FILE id="BZp95w" name="AT_AudioManager.cpp" compile="1" resource="0"
+            file="Source/AT_AudioManager.cpp"/>
+      <FILE id="LqO5Xi" name="AT_AudioManager.h" compile="0" resource="0"
+            file="Source/AT_AudioManager.h"/>
+      <FILE id="VUIb8K" name="AT_AudioManagerListener.h" compile="0" resource="0"
+            file="Source/AT_AudioManagerListener.h"/>
+      <FILE id="P1pV5Y" name="AT_SpatializationEngine.cpp" compile="1" resource="0"
+            file="Source/AT_SpatializationEngine.cpp"/>
+      <FILE id="ukuPH8" name="AT_SpatializationEngine.h" compile="0" resource="0"
+            file="Source/AT_SpatializationEngine.h"/>
+      <FILE id="pw1Vw6" name="AT_Spatializer.cpp" compile="1" resource="0"
+            file="Source/AT_Spatializer.cpp"/>
+      <FILE id="S8DCzi" name="AT_Spatializer.h" compile="0" resource="0"
+            file="Source/AT_Spatializer.h"/>
+      <FILE id="AW0aHI" name="AT_SpatPlayer.cpp" compile="1" resource="0"
+            file="Source/AT_SpatPlayer.cpp"/>
+      <FILE id="Ky3Dip" name="AT_SpatPlayer.h" compile="0" resource="0" file="Source/AT_SpatPlayer.h"/>
+      <FILE id="EJDqpH" name="FIR_precoeffs_44100.h" compile="0" resource="0"
+            file="Source/FIR_precoeffs_44100.h"/>
+      <FILE id="LHTocD" name="FIR_precoeffs_48000.h" compile="0" resource="0"
+            file="Source/FIR_precoeffs_48000.h"/>
+      <FILE id="r4CqND" name="FIR_precoeffs_96000.h" compile="0" resource="0"
+            file="Source/FIR_precoeffs_96000.h"/>
+      <FILE id="GfMD79" name="HRTFProcessor.cpp" compile="1" resource="0"
+            file="Source/HRTFProcessor.cpp"/>
+      <FILE id="Z2PimK" name="HRTFProcessor.h" compile="0" resource="0" file="Source/HRTFProcessor.h"/>
+      <FILE id="ioxItB" name="PluginInterface.cpp" compile="1" resource="0"
+            file="Source/PluginInterface.cpp"/>
+      <FILE id="TJyle0" name="PluginInterface.h" compile="0" resource="0"
+            file="Source/PluginInterface.h"/>
+      <FILE id="z7sp8N" name="SOFAReader.cpp" compile="1" resource="0" file="Source/SOFAReader.cpp"/>
+      <FILE id="sFdrQv" name="SOFAReader.h" compile="0" resource="0" file="Source/SOFAReader.h"/>
+      <FILE id="WXqWCo" name="UnityLogger.cpp" compile="1" resource="0" file="Source/UnityLogger.cpp"/>
+      <FILE id="fADtmP" name="UnityLogger.h" compile="0" resource="0" file="Source/UnityLogger.h"/>
+    </GROUP>
+  </MAINGROUP>
+  <MODULES>
+    <MODULE id="juce_audio_basics" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_audio_devices" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_audio_formats" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_audio_processors" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_audio_utils" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_core" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_data_structures" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_dsp" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_events" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_graphics" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_gui_basics" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_gui_extra" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+  </MODULES>
+  <JUCEOPTIONS JUCE_STRICT_REFCOUNTEDPOINTER="1"/>
+  <EXPORTFORMATS>
+    <XCODE_MAC targetFolder="Builds/MacOSX" customXcodeFlags="SYMBOLS_HIDDEN_BY_DEFAULT=NO"
+               postbuildCommand="mkdir -p &quot;$PROJECT_DIR/../../../Unity_TestPlugin/Assets/Plugins/&quot;&#10;cp -v &quot;$TARGET_BUILD_DIR/$PRODUCT_NAME.dylib&quot; &quot;$PROJECT_DIR/../../../Unity_TestPlugin/Assets/Plugins/&quot;&#10;codesign --force --sign - &quot;$PROJECT_DIR/../../../Unity_TestPlugin/Assets/Plugins/$PRODUCT_NAME.dylib&quot;&#10;nm -g &quot;$PROJECT_DIR/../../../Unity_TestPlugin/Assets/Plugins/$PRODUCT_NAME.dylib&quot; | head -20&#10;echo &quot;Copie, signature et verification terminees&quot;"
+               extraDefs="SYMBOLS_HIDDEN_BY_DEFAULT=NO">
+      <CONFIGURATIONS>
+        <CONFIGURATION isDebug="1" name="Debug" targetName="AT_SPAT_AudioEngineLib"
+                       customXcodeFlags="SYMBOLS_HIDDEN_BY_DEFAULT=NO"/>
+        <CONFIGURATION isDebug="0" name="Release" targetName="AT_SPAT_AudioEngineLib"/>
+      </CONFIGURATIONS>
+      <MODULEPATHS>
+        <MODULEPATH id="juce_core" path="../../../../JUCE/modules"/>
+        <MODULEPATH id="juce_data_structures" path="../../../../JUCE/modules"/>
+        <MODULEPATH id="juce_events" path="../../../../JUCE/modules"/>
+        <MODULEPATH id="juce_audio_basics" path="../../../../JUCE/modules"/>
+        <MODULEPATH id="juce_audio_devices" path="../../../../JUCE/modules"/>
+        <MODULEPATH id="juce_audio_processors" path="../../../../JUCE/modules"/>
+        <MODULEPATH id="juce_gui_extra" path="../../../../JUCE/modules"/>
+        <MODULEPATH id="juce_gui_basics" path="../../../../JUCE/modules"/>
+        <MODULEPATH id="juce_graphics" path="../../../../JUCE/modules"/>
+        <MODULEPATH id="juce_dsp" path="../../../../JUCE/modules"/>
+        <MODULEPATH id="juce_audio_formats" path="../../../../JUCE/modules"/>
+        <MODULEPATH id="juce_audio_utils" path="../../../../JUCE/modules"/>
+      </MODULEPATHS>
+    </XCODE_MAC>
+    <VS2022 targetFolder="Builds/VisualStudio2022" extraDefs="JUCE_ASIO=1 ">
+      <CONFIGURATIONS>
+        <CONFIGURATION isDebug="1" name="Debug" postbuildCommand="@echo off&#10;if not exist &quot;$(ProjectDir)..\..\..\Unity_TestPlugin\Assets\Plugins\AT_SPAT\Win\&quot; mkdir &quot;$(ProjectDir)..\..\..\Unity_TestPlugin\Assets\Plugins\AT_SPAT\Win\&quot;&#10;copy /Y &quot;$(TargetDir)$(TargetName).dll&quot; &quot;$(ProjectDir)..\..\..\Unity_TestPlugin\Assets\Plugins\AT_SPAT\Win\&quot;&#10;echo Copie terminee&#10;copy /Y &quot;$(TargetDir)$(TargetName).pdb&quot; &quot;$(ProjectDir)..\..\..\Unity_TestPlugin\Assets\Plugins\AT_SPAT\Win\&quot; 2&gt;nul"
+                       headerPath="C:\JUCE\modules\juce_audio_devices\native\ASIOSDK&#10;C:\JUCE\modules\juce_audio_devices\native\ASIOSDK\common&#10;C:\JUCE\modules\juce_audio_devices\native\ASIOSDK\host&#10;"/>
+        <CONFIGURATION isDebug="0" name="Release" postbuildCommand="@echo off&#10;if not exist &quot;$(ProjectDir)..\..\..\Unity_TestPlugin\Assets\Plugins\AT_SPAT\Win\&quot; mkdir &quot;$(ProjectDir)..\..\..\Unity_TestPlugin\Assets\Plugins\AT_SPAT\Win\&quot;&#10;copy /Y &quot;$(TargetDir)$(TargetName).dll&quot; &quot;$(ProjectDir)..\..\..\Unity_TestPlugin\Assets\Plugins\AT_SPAT\Win\&quot;&#10;echo Copie terminee&#10;copy /Y &quot;$(TargetDir)$(TargetName).pdb&quot; &quot;$(ProjectDir)..\..\..\Unity_TestPlugin\Assets\Plugins\AT_SPAT\Win\&quot; 2&gt;nul"
+                       headerPath="C:\JUCE\modules\juce_audio_devices\native\ASIOSDK&#10;C:\JUCE\modules\juce_audio_devices\native\ASIOSDK\common&#10;C:\JUCE\modules\juce_audio_devices\native\ASIOSDK\host&#10;"/>
+      </CONFIGURATIONS>
+      <MODULEPATHS>
+        <MODULEPATH id="juce_audio_basics" path="../../juce"/>
+        <MODULEPATH id="juce_audio_devices" path="../../juce"/>
+        <MODULEPATH id="juce_audio_formats" path="../../juce"/>
+        <MODULEPATH id="juce_audio_processors" path="../../juce"/>
+        <MODULEPATH id="juce_audio_utils" path="../../juce"/>
+        <MODULEPATH id="juce_core" path="../../juce"/>
+        <MODULEPATH id="juce_data_structures" path="../../juce"/>
+        <MODULEPATH id="juce_dsp" path="../../juce"/>
+        <MODULEPATH id="juce_events" path="../../juce"/>
+        <MODULEPATH id="juce_graphics" path="../../juce"/>
+        <MODULEPATH id="juce_gui_basics" path="../../juce"/>
+        <MODULEPATH id="juce_gui_extra" path="../../juce"/>
+      </MODULEPATHS>
+    </VS2022>
+  </EXPORTFORMATS>
+</JUCERPROJECT>

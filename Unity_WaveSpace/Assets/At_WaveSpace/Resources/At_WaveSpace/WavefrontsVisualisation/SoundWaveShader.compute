@@ -1,0 +1,64 @@
+#pragma kernel CSMain
+
+// Using StructuredBuffer instead of uniform arrays
+// avoids Metal's 4KB constant buffer limit on Mac ARM
+RWTexture2D<float4> Result;
+
+float _displayPlaneSizeX, _displayPlaneSizeZ;
+float _displayPlanePositionX, _displayPlanePositionZ;
+float _waveFrequency;
+float _outputChannelCount;
+
+// Effective radius (metres) of the WFS secondary sources (loudspeakers) —
+// set by SoundWaveShaderManager from At_MasterOutput.secondarySourceSize
+// (identical value used in the WFS audio engine).
+// Regularises the 1/r² singularity when a pixel is very close to a speaker.
+// Coherent with AT_Spatializer P1: r_eff = sqrt(r² + ε²) models each loudspeaker
+// as a finite-size secondary source rather than an ideal point source.
+// When _secondarySourceSize = 0 this degenerates to the original behaviour.
+float _secondarySourceSize;
+
+StructuredBuffer<float4> _wavePositions;
+StructuredBuffer<float4> _wfsAmps;
+StructuredBuffer<float4> _wfsDelays;
+StructuredBuffer<float4> _wfsSpeakerMask;
+
+float getValueForSinWaveAtPosition(float2 displayPosition, float2 wavePosition, float amp, float delay)
+{
+    displayPosition -= wavePosition;
+
+    float r_raw = sqrt(displayPosition.x * displayPosition.x + displayPosition.y * displayPosition.y);
+
+    // Soft singularity regularisation — same formula as P1 in AT_Spatializer.cpp.
+    // Prevents RGB saturation (bright blobs) near speaker positions.
+    float r = sqrt(r_raw * r_raw + _secondarySourceSize * _secondarySourceSize);
+
+    return amp * (1.0f / (r * r)) * sin(2.0f * 3.14159265f * _waveFrequency * (r / 340.0f + delay));
+}
+
+
+[numthreads(8, 8, 1)]
+void CSMain(uint3 id : SV_DispatchThreadID)
+{
+    uint width, height;
+    Result.GetDimensions(width, height);
+
+    float2 xzu = (id.xy * float2(-1, -1) + float2(width / 2.0f, height / 2.0f))
+        * float2(_displayPlaneSizeX, _displayPlaneSizeZ) / float2(width, height)
+        + float2(_displayPlanePositionX, _displayPlanePositionZ);
+
+    float value = 0;
+    int count = (int)_outputChannelCount;
+    for (int i = 0; i < count; i++)
+        value += _wfsSpeakerMask[i] * getValueForSinWaveAtPosition(
+            xzu,
+            float2(_wavePositions[i].x, _wavePositions[i].z),
+            _wfsAmps[i].x,
+            _wfsDelays[i].x
+        );
+
+    if (value > 0)
+        Result[id.xy] = float4(0, 0, value, 1);
+    else
+        Result[id.xy] = float4(abs(value), 0, 0, 1);
+}

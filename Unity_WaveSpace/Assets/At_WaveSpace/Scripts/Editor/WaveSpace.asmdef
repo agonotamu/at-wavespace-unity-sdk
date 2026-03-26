@@ -1,0 +1,6 @@
+{
+    "name": "At_WaveSpace.Editor",
+    "references": ["At_WaveSpace"],
+    "includePlatforms": ["Editor"],
+    "allowUnsafeCode": true
+}
