@@ -4,46 +4,44 @@
               addUsingNamespaceToJuceHeader="0" jucerFormatVersion="1">
   <MAINGROUP id="CJfr64" name="TestAppConsole">
     <GROUP id="{7C167C56-E3CD-8FED-A2DD-9EA22785A7AA}" name="Source">
-      <FILE id="uyvOoa" name="Main.cpp" compile="1" resource="0" file="Source/Main.cpp"/>
-      <FILE id="LsfAkm" name="AT_SpatConfig.h" compile="0" resource="0" file="Source/AT_SpatConfig.h"/>
-      <FILE id="ocCQCm" name="PluginInterface.h" compile="0" resource="0"
+      <FILE id="WmkPj5" name="Main.cpp" compile="1" resource="0" file="Source/Main.cpp"/>
+      <FILE id="xIIQWg" name="AT_SpatConfig.h" compile="0" resource="0" file="Source/AT_SpatConfig.h"/>
+      <FILE id="n3QOpu" name="PluginInterface.h" compile="0" resource="0"
             file="Source/PluginInterface.h"/>
-      <FILE id="EaJORe" name="PluginInterface.cpp" compile="1" resource="0"
+      <FILE id="aXpJ9S" name="PluginInterface.cpp" compile="1" resource="0"
             file="Source/PluginInterface.cpp"/>
-      <FILE id="a7Csg1" name="AT_AudioManager.h" compile="0" resource="0"
+      <FILE id="xTLDb3" name="AT_AudioManager.h" compile="0" resource="0"
             file="Source/AT_AudioManager.h"/>
-      <FILE id="meA5oj" name="AT_AudioManager.cpp" compile="1" resource="0"
+      <FILE id="plVPEr" name="AT_AudioManager.cpp" compile="1" resource="0"
             file="Source/AT_AudioManager.cpp"/>
-      <FILE id="Wpl4Fm" name="AT_AudioManagerListener.h" compile="0" resource="0"
+      <FILE id="sdHwHk" name="AT_AudioManagerListener.h" compile="0" resource="0"
             file="Source/AT_AudioManagerListener.h"/>
-      <FILE id="ybiHCv" name="AT_SpatializationEngine.h" compile="0" resource="0"
+      <FILE id="TC4XpU" name="AT_SpatializationEngine.h" compile="0" resource="0"
             file="Source/AT_SpatializationEngine.h"/>
-      <FILE id="lGDKEW" name="AT_SpatializationEngine.cpp" compile="1" resource="0"
+      <FILE id="XSzHZH" name="AT_SpatializationEngine.cpp" compile="1" resource="0"
             file="Source/AT_SpatializationEngine.cpp"/>
-      <FILE id="BcBHmp" name="AT_SpatPlayer.h" compile="0" resource="0" file="Source/AT_SpatPlayer.h"/>
-      <FILE id="fjGFSh" name="AT_SpatPlayer.cpp" compile="1" resource="0"
+      <FILE id="rozbaI" name="AT_SpatPlayer.h" compile="0" resource="0" file="Source/AT_SpatPlayer.h"/>
+      <FILE id="Z9suEV" name="AT_SpatPlayer.cpp" compile="1" resource="0"
             file="Source/AT_SpatPlayer.cpp"/>
-      <FILE id="tvB9FF" name="AT_Spatializer.h" compile="0" resource="0"
+      <FILE id="eDkxAx" name="AT_Spatializer.h" compile="0" resource="0"
             file="Source/AT_Spatializer.h"/>
-      <FILE id="E99VQQ" name="AT_Spatializer.cpp" compile="1" resource="0"
+      <FILE id="yXSpdw" name="AT_Spatializer.cpp" compile="1" resource="0"
             file="Source/AT_Spatializer.cpp"/>
-      <FILE id="IVowqU" name="AT_BinauralSimpleSpatializer.cpp" compile="1"
-            resource="0" file="Source/AT_BinauralSimpleSpatializer.cpp"/>
-      <FILE id="DmiBo8" name="AT_BinauralSimpleSpatializer.h" compile="0"
-            resource="0" file="Source/AT_BinauralSimpleSpatializer.h"/>
-      <FILE id="QQJGtf" name="HRTFProcessor.h" compile="0" resource="0" file="Source/HRTFProcessor.h"/>
-      <FILE id="FL5y4R" name="HRTFProcessor.cpp" compile="1" resource="0"
+      <FILE id="Aqm5Kl" name="HRTFProcessor.h" compile="0" resource="0" file="Source/HRTFProcessor.h"/>
+      <FILE id="ZpsXmo" name="HRTFProcessor.cpp" compile="1" resource="0"
             file="Source/HRTFProcessor.cpp"/>
-      <FILE id="cncaqn" name="SOFAReader.h" compile="0" resource="0" file="Source/SOFAReader.h"/>
-      <FILE id="An2hXS" name="SOFAReader.cpp" compile="1" resource="0" file="Source/SOFAReader.cpp"/>
-      <FILE id="rROpIR" name="FIR_precoeffs_44100.h" compile="0" resource="0"
-            file="Source/FIR_precoeffs_44100.h"/>
-      <FILE id="dXROoK" name="FIR_precoeffs_48000.h" compile="0" resource="0"
-            file="Source/FIR_precoeffs_48000.h"/>
-      <FILE id="ObZRez" name="FIR_precoeffs_96000.h" compile="0" resource="0"
-            file="Source/FIR_precoeffs_96000.h"/>
-      <FILE id="NCzpl8" name="UnityLogger.cpp" compile="1" resource="0" file="Source/UnityLogger.cpp"/>
-      <FILE id="wEbeDu" name="UnityLogger.h" compile="0" resource="0" file="Source/UnityLogger.h"/>
+      <FILE id="SBRK2M" name="SOFAReader.h" compile="0" resource="0" file="Source/SOFAReader.h"/>
+      <FILE id="mKr09U" name="SOFAReader.cpp" compile="1" resource="0" file="Source/SOFAReader.cpp"/>
+      <FILE id="VvG2LJ" name="AT_WfsPrefilter.h" compile="0" resource="0"
+            file="Source/AT_WfsPrefilter.h"/>
+      <FILE id="PiELQp" name="AT_NearFieldCorrection.h" compile="0" resource="0"
+            file="Source/AT_NearFieldCorrection.h"/>
+      <FILE id="CC89Xd" name="AT_BinauralSimpleSpatializer.cpp" compile="1"
+            resource="0" file="Source/AT_BinauralSimpleSpatializer.cpp"/>
+      <FILE id="ZmPiFC" name="AT_BinauralSimpleSpatializer.h" compile="0"
+            resource="0" file="Source/AT_BinauralSimpleSpatializer.h"/>
+      <FILE id="WrjfVP" name="UnityLogger.cpp" compile="1" resource="0" file="Source/UnityLogger.cpp"/>
+      <FILE id="kyvrW6" name="UnityLogger.h" compile="0" resource="0" file="Source/UnityLogger.h"/>
     </GROUP>
   </MAINGROUP>
   <MODULES>

@@ -131,21 +131,6 @@ std::string promptHRTFFilePath() {
 std::string promptAudioDevice() {
     std::cout << "\n=== AUDIO DEVICE SELECTION ===\n";
     
-    // Platform-specific device scanning
-    // CRITICAL: Use async=false for console apps (no JUCE message loop)
-    /* // BUG ON WINDOWS
-    #if JUCE_WINDOWS
-        std::cout << "Scanning available audio devices (including ASIO)...\n";
-        // Windows: Scan ASIO devices (important for pro audio interfaces)
-        g_audioManager->refreshDevices(true, false);  // includeASIO=true, async=false
-    #else
-        std::cout << "Scanning available audio devices...\n";
-        // macOS/Linux: No ASIO available
-        g_audioManager->refreshDevices(false, false);  // includeASIO=false, async=false
-    #endif
-
-    std::cout << "Device scan complete.\n";
-    */
 
 #if JUCE_WINDOWS
     // ════════════════════════════════════════════════════════════════════
@@ -517,10 +502,10 @@ bool initializeAudioSystem() {
     setupSource();
     
     // set spatialization options :
-    g_audioManager->setIsPrefilter(g_config.playerUID, true);
+    g_audioManager->setIsPrefilterAllPlayers(true);
     g_audioManager->setIsWfsGain(true);
     g_audioManager->setIsNearFieldCorrection(true);
-    
+    g_audioManager->setNearFieldCorrectionRRef(3.0, AT::NearFieldCorrection::DEFAULT_HEAD_RADIUS);
     // Start playback
     std::cout << "\nStarting playback...\n";
     g_audioManager->startPlayer(g_config.playerUID);
