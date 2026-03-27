@@ -2,7 +2,7 @@
   <img src="docs/images/WaveSpace_Logo.png" alt="AT WaveSpace Logo" width="480"/>
 </p>
 
-# Wave Field Synthesis Audio SDK For Unity Engine
+# Wave Field Synthesis Audio Engine
 
 > High-precision spatial audio for Unity, powered by Wave Field Synthesis.
 
