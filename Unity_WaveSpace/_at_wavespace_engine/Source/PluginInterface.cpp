@@ -125,8 +125,19 @@ EXPORT_API int CALL_CONV AT_WS_setup(const char* audioDeviceName, int inputChann
     
     std::string deviceName = (audioDeviceName != nullptr) ? audioDeviceName : "";
     
-    // Delegate to manager
-    g_audioManager->setup(deviceName, inputChannels, outputChannels, bufferSize, isBinauralVirtualization);
+    // Delegate to manager.  setup() now returns false when the channel count guard
+    // fires (non-binaural mode: requested physical outputs > device maximum) or when
+    // SpatializationEngine::setup() throws.  Either condition is fatal at this stage
+    // — the audio device is not open and no audio processing can take place.
+    bool ok = g_audioManager->setup(deviceName, inputChannels, outputChannels,
+                                    bufferSize, isBinauralVirtualization);
+    if (!ok)
+    {
+        LOG_ERROR("AT_WS_setup: setup failed for device '" << deviceName
+            << "' (" << outputChannels << " virtual speaker(s), "
+            << "binaural=" << (isBinauralVirtualization ? "true" : "false") << ").");
+        return AUDIO_PLUGIN_ERROR;
+    }
     return AUDIO_PLUGIN_OK;
 }
 

@@ -210,17 +210,26 @@ namespace AT
         // ====================================================================
 
         /**
-         * @brief Configures the audio device and starts the engine
+         * @brief Configures the audio device and starts the engine.
          *
-         * @param deviceName Device name (empty = default)
-         * @param numInputChannels Number of input channels
-         * @param numVirtualSpeakers Number of virtual speakers used for WFS when
-         *        binaural virtualization is enabled (physical output = 2 channels),
-         *        or the number of physical output channels otherwise
-         * @param bufferSize Buffer size in samples (0 = auto)
-         * @param isBinauralVirtualization True to enable binaural virtualization
+         * Before opening the JUCE AudioDeviceManager, validates that the requested
+         * physical output channel count does not exceed the device's reported
+         * maximum.  In binaural mode the physical output is always 2 channels
+         * regardless of numVirtualSpeakers, so the channel count guard is skipped.
+         *
+         * @param deviceName           Device name (empty string = system default).
+         * @param numInputChannels     Number of input channels.
+         * @param numVirtualSpeakers   Number of virtual WFS speakers.  Equals the
+         *                             physical output channel count in non-binaural
+         *                             mode; ignored for physical routing in binaural
+         *                             mode (output is always stereo).
+         * @param bufferSize           Buffer size in samples (0 = auto).
+         * @param isBinauralVirtualization  True to enable binaural virtualization.
+         *
+         * @return True on success, false if the channel count guard fires or if the
+         *         SpatializationEngine::setup() call throws.
          */
-        void setup(const std::string& deviceName,
+        bool setup(const std::string& deviceName,
             int numInputChannels,
             int numVirtualSpeakers,
             int bufferSize,

@@ -584,6 +584,32 @@ public class At_MasterOutputEditor : Editor
             return;
         }
 
+        // ── 1b. Device channel count guard (non-binaural mode only) ──────
+        // In binaural mode the physical output is always 2 channels regardless of
+        // the virtual speaker count — JUCE receives outputChannels=2 and the guard
+        // is not needed. In direct WFS mode numVirtualSpeakers equals physical
+        // output channels: requesting more than the device supports causes JUCE to
+        // crash inside AudioDeviceManager::initialise() with no recoverable path.
+        // We block the load here (Edit time) rather than letting the crash occur
+        // at Play-mode entry.
+        if (!outputState.isBinauralVirtualization)
+        {
+            int deviceMax = GetSelectedDeviceMaxOutputChannels();
+            if (deviceMax > 0 && n > deviceMax)
+            {
+                EditorUtility.DisplayDialog(
+                    "Channel Count Mismatch",
+                    $"The speaker config '{Path.GetFileName(jsonPath)}' requires {n} output channels,\n" +
+                    $"but the selected device '{outputState.audioDeviceName}' only supports {deviceMax}.\n\n" +
+                    "Solutions:\n" +
+                    $"  • Enable Binaural Virtualization to decouple virtual speaker count from physical outputs.\n" +
+                    $"  • Select a device with at least {n} output channels.\n" +
+                    $"  • Use a speaker config with ≤ {deviceMax} speakers.",
+                    "OK");
+                return;
+            }
+        }
+
         // ── 2. Destroy existing VirtualSpeakers & parent ──────────────────
         At_VirtualSpeaker[] existingVss = FindObjectsOfType<At_VirtualSpeaker>();
         GameObject vsParent = (existingVss.Length > 0) ? existingVss[0].transform.parent?.gameObject : null;
@@ -886,9 +912,33 @@ public class At_MasterOutputEditor : Editor
         {
             outputState.isBinauralVirtualization  = newBin;
             masterOutput.isBinauralVirtualization = newBin;
-            int ch = newBin ? 2 : outputState.numVirtualSpeakers;
-            outputState.outputChannelCount  = ch;
-            masterOutput.outputChannelCount = ch;
+
+            if (newBin)
+            {
+                // Binaural ON: physical output is always 2 channels regardless of
+                // virtual speaker count — no channel count check needed.
+                outputState.outputChannelCount  = 2;
+                masterOutput.outputChannelCount = 2;
+            }
+            else
+            {
+                // Binaural OFF: virtual speakers map 1-to-1 to physical output channels.
+                // Clamp numVirtualSpeakers to the device maximum to prevent JUCE from
+                // requesting more output channels than the device supports at setup time.
+                int deviceMax = GetSelectedDeviceMaxOutputChannels();
+                if (deviceMax > 0 && outputState.numVirtualSpeakers > deviceMax)
+                {
+                    Debug.LogWarning($"[AudioPlugin] Binaural disabled: clamping virtual speaker count " +
+                                     $"from {outputState.numVirtualSpeakers} to device maximum ({deviceMax}). " +
+                                     "Enable Binaural Virtualization to use more virtual speakers than " +
+                                     "the device has physical output channels.");
+                    outputState.numVirtualSpeakers  = deviceMax;
+                    masterOutput.numVirtualSpeakers = deviceMax;
+                }
+                outputState.outputChannelCount  = outputState.numVirtualSpeakers;
+                masterOutput.outputChannelCount = outputState.numVirtualSpeakers;
+            }
+
             shouldSave = true;
         }
         EditorGUILayout.EndHorizontal();

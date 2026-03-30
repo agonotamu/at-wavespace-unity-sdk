@@ -153,24 +153,34 @@ public class At_Player : MonoBehaviour
 
     public void Awake()
     {
-        listener   = FindObjectOfType<At_Listener>();
-        objectName = gameObject.name;
+        // Set up scene references only.  Do NOT call addPlayer() or initPlayer() here.
+        //
+        // Initialization responsibility is split by instantiation type:
+        //   - Scene players  : At_MasterOutput.Awake() iterates FindObjectsOfType and
+        //                       calls addPlayer() + initPlayer() for each player after
+        //                       the engine has started successfully.
+        //   - Runtime players: OnEnable() fires after this Awake(), by which time
+        //                       masterOutput is already assigned; it calls addPlayer() +
+        //                       initPlayer() when the engine is running.
+        //
+        // Self-initializing here would create a dual-init race with
+        // At_MasterOutput.Awake() because Unity does not guarantee the Awake()
+        // execution order across GameObjects.
+        listener     = FindObjectOfType<At_Listener>();
+        objectName   = gameObject.name;
         masterOutput = FindObjectOfType<At_MasterOutput>();
-
-        if (!isInitialized && masterOutput.isInitialized)
-        {
-            if (masterOutput.addPlayer(this) != -1)
-                initPlayer();
-        }
     }
 
     public void OnEnable()
     {
-        if (!isInitialized && masterOutput != null && masterOutput.isInitialized)
-        {
-            if (masterOutput.addPlayer(this) != -1)
-                initPlayer();
-        }
+        // Handles players instantiated at runtime after the engine is already running.
+        // For scene players this path is inert: At_MasterOutput.Awake() sets
+        // isInitialized = true before OnEnable() fires, so the guard below exits early.
+        // masterOutput is assigned by Awake() which always runs before OnEnable().
+        if (masterOutput == null || !masterOutput.isInitialized || isInitialized) return;
+
+        if (masterOutput.addPlayer(this) != -1)
+            initPlayer();
     }
 
     /// <summary>Stops playback and unregisters the player from the native engine.</summary>
@@ -245,6 +255,20 @@ public class At_Player : MonoBehaviour
     /// </summary>
     public void initPlayer()
     {
+        // masterOutput is assigned by Awake() before initPlayer() is ever called
+        // (either via At_MasterOutput.Awake() for scene players, or via OnEnable()
+        // for runtime players).  The null check below is a defensive fallback for
+        // exceptional cases (e.g. initPlayer() called directly from editor tooling).
+        if (masterOutput == null)
+            masterOutput = FindObjectOfType<At_MasterOutput>();
+
+        if (masterOutput == null)
+        {
+            Debug.LogError($"[AudioPlugin] initPlayer(): At_MasterOutput not found in scene " +
+                           $"for player '{gameObject.name}'. Initialization skipped.");
+            return;
+        }
+
         numVirtualSpeakers = masterOutput.numVirtualSpeakers;
 
         playerState = At_AudioEngineUtils.getPlayerStateWithGuidAndName(

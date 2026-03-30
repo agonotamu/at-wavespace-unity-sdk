@@ -204,7 +204,7 @@ public class At_PlayerEditor : Editor
             if (!System.IO.Directory.Exists(audioDir))
                 audioDir = Application.streamingAssetsPath;
 
-            string absPath = EditorUtility.OpenFilePanel("Select Audio File", audioDir, "wav,mp3,ogg");
+            string absPath = EditorUtility.OpenFilePanel("Select Audio File", audioDir, "wav,mp3,ogg, m4a");
             if (!string.IsNullOrEmpty(absPath))
             {
                 // Store path relative to StreamingAssets (portable Mac/Windows)

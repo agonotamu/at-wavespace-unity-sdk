@@ -111,8 +111,6 @@ public class At_MasterOutput : MonoBehaviour
     {
         AT_WS_setLogCallback(OnSpatEngineLog);
 
-        At_Player[] players = FindObjectsOfType<At_Player>();
-
         outputState = At_AudioEngineUtils.getOutputState(SceneManager.GetActiveScene().name);
 
         audioDeviceName          = outputState.audioDeviceName;
@@ -152,12 +150,30 @@ public class At_MasterOutput : MonoBehaviour
 
         InitSpatializerEngine();
 
+        // Abort the rest of Awake() when the engine failed to start (e.g. channel
+        // count mismatch, device not available).  isInitialized is false at this
+        // point; proceeding would call addPlayer() which returns -1 without assigning
+        // p.masterOutput, and the subsequent initPlayer() call would throw a
+        // NullReferenceException on masterOutput.numVirtualSpeakers.
+        if (!isInitialized) return;
+
+        // Query scene players AFTER the engine has started successfully.
+        // Placing this call here rather than at the top of Awake() has two benefits:
+        //   1. Players whose own Awake() has not yet run still have their masterOutput
+        //      reference unset; initPlayer() handles this via a defensive null-check.
+        //   2. We avoid iterating (and silently skipping) players when the engine is
+        //      not running, which would leave them permanently uninitialized.
+        At_Player[] players = FindObjectsOfType<At_Player>();
+
         foreach (At_Player p in players)
         {
             if (!p.isInitialized)
             {
-                addPlayer(p);
-                p.initPlayer();
+                // addPlayer() returns -1 when registration fails (e.g. duplicate GUID).
+                // Guard initPlayer() on success to prevent it from running with a
+                // partially-configured player (masterOutput not yet assigned).
+                if (addPlayer(p) != -1)
+                    p.initPlayer();
             }
         }
 
@@ -278,6 +294,20 @@ public class At_MasterOutput : MonoBehaviour
 
         int result = AT_WS_setup(audioDeviceName, 0, numVirtualSpeakers, bufferSize, isBinauralVirtualization);
 
+        // Check the setup result before doing anything else.  A failed setup means
+        // the JUCE device manager is not running; calling LoadHRTF or
+        // setIsSimpleBinauralSpat on it would be unsafe and is likely to crash.
+        if (result != AUDIO_PLUGIN_OK)
+        {
+            Debug.LogError($"[AudioPlugin] Failed to setup audio device '{audioDeviceName}' " +
+                           $"with {numVirtualSpeakers} virtual speaker(s) " +
+                           $"(isBinaural={isBinauralVirtualization}). " +
+                           "Verify that the device has enough output channels, " +
+                           "or enable Binaural Virtualization.");
+            AT_WS_shutdown();
+            return;
+        }
+
         if (isBinauralVirtualization)
         {
             if (!string.IsNullOrEmpty(hrtfFilePath) && System.IO.File.Exists(hrtfFilePath))
@@ -289,13 +319,6 @@ public class At_MasterOutput : MonoBehaviour
                 Debug.Log($"[AudioPlugin] Simple binaural mode set to {isSimpleBinauralSpat}");
             else
                 Debug.LogError($"[AudioPlugin] Failed to set simple binaural mode to {isSimpleBinauralSpat}");
-        }
-
-        if (result != AUDIO_PLUGIN_OK)
-        {
-            Debug.LogError("[AudioPlugin] Failed to setup audio device");
-            AT_WS_shutdown();
-            return;
         }
 
         isInitialized = true;

@@ -595,7 +595,7 @@ namespace AT
     // AUDIO DEVICE SETUP
     // ========================================================================
 
-    void AudioManager::setup(const std::string& deviceName,
+    bool AudioManager::setup(const std::string& deviceName,
         int numInputChannels,
         int numVirtualSpeakers,
         int bufferSize,
@@ -605,22 +605,68 @@ namespace AT
         m_isBinauralVirtualization = isBinauralVirtualization;
         m_numVirtualSpeakers = numVirtualSpeakers;
 
-        // Determine the number of physical output channels based on the binaural flag:
-        // binaural mode outputs to 2 channels (stereo); otherwise use the full speaker count
+        // In binaural mode the output is always stereo regardless of the number of
+        // virtual speakers.  In direct WFS mode numVirtualSpeakers equals the number
+        // of physical output channels opened on the audio device.
         int physicalOutputChannels = isBinauralVirtualization ? 2 : numVirtualSpeakers;
+
+        // ── Channel count guard (non-binaural mode only) ─────────────────────────
+        // Requesting more physical output channels than the device supports causes
+        // JUCE to crash inside AudioDeviceManager::initialise() with no recoverable
+        // exception.  The check uses the cached device list populated by
+        // filterUnavailableDevices(); it is skipped when maxOutputChannels == -1
+        // (not yet queried) to avoid blocking setup on a missing device entry.
+        if (!isBinauralVirtualization)
+        {
+            std::lock_guard<std::mutex> lock(m_deviceCacheMutex);
+            for (const auto& dev : m_cachedDevices)
+            {
+                // Match by name, or accept the first entry when deviceName is empty
+                // (default device selection).
+                if (deviceName.empty() || dev.name == deviceName)
+                {
+                    if (dev.maxOutputChannels > 0 &&
+                        physicalOutputChannels > dev.maxOutputChannels)
+                    {
+                        LOG_ERROR("AudioManager::setup - requested " << physicalOutputChannels
+                            << " output channel(s) exceeds device maximum ("
+                            << dev.maxOutputChannels << ") for device '"
+                            << dev.name << "'. "
+                            << "Reduce numVirtualSpeakers or enable binaural virtualization.");
+                        return false;
+                    }
+                    break;
+                }
+            }
+        }
 
         LOG("AudioManager::setup - Virtual speakers: " << numVirtualSpeakers
             << ", Physical outputs: " << physicalOutputChannels
             << ", Binaural: " << (isBinauralVirtualization ? "YES" : "NO"));
 
-        m_spatializationEngine.setup(
-            juce::String(deviceName),
-            numInputChannels,
-            physicalOutputChannels,
-            bufferSize,
-            numVirtualSpeakers,
-            isBinauralVirtualization
-        );
+        try
+        {
+            m_spatializationEngine.setup(
+                juce::String(deviceName),
+                numInputChannels,
+                physicalOutputChannels,
+                bufferSize,
+                numVirtualSpeakers,
+                isBinauralVirtualization
+            );
+        }
+        catch (const std::exception& e)
+        {
+            LOG_ERROR("AudioManager::setup - SpatializationEngine::setup() threw: " << e.what());
+            return false;
+        }
+        catch (...)
+        {
+            LOG_ERROR("AudioManager::setup - SpatializationEngine::setup() threw an unknown exception.");
+            return false;
+        }
+
+        return true;
     }
 
     void AudioManager::startPlayer(int uid)
