@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/images/WaveSpace_Logo.png" alt="AT WaveSpace Logo" width="480"/>
+  <img src="docs/images/WaveSpace_Logo.png" alt="AT WaveSpace Logo" width="330"/>
 </p>
 
 # Wave Field Synthesis Audio Engine
