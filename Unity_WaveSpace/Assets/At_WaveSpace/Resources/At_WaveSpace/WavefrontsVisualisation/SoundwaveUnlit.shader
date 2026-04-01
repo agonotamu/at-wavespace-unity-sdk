@@ -8,9 +8,13 @@ Shader "AT_WaveSpace/SoundwaveUnlit"
 
     // ─────────────────────────────────────────────────────────────────────────
     // SubShader 1 : URP
+    // PackageRequirements évite la compilation (et l'erreur Core.hlsl introuvable)
+    // sur les projets sans URP installé. Requiert Unity 2021.2+.
     // ─────────────────────────────────────────────────────────────────────────
     SubShader
     {
+        PackageRequirements { "com.unity.render-pipelines.universal" }
+
         Tags
         {
             "RenderType"      = "Transparent"
