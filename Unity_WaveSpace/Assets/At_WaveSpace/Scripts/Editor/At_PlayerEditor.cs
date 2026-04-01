@@ -228,8 +228,7 @@ public class At_PlayerEditor : Editor
 
                 if (AT_WS_getAudioFileMetadata(fullPath, out numChannels, out sampleRate, out lengthSeconds, out totalSamples) == 0)
                 {
-                    playerState.numChannelsInAudiofile = numChannels;
-                    Debug.Log($"[At_PlayerEditor] {Path.GetFileName(fullPath)}: {numChannels}ch, {sampleRate:F0}Hz, {lengthSeconds:F2}s");
+                    playerState.numChannelsInAudiofile = numChannels;                    
                 }
                 else
                 {
@@ -270,8 +269,7 @@ public class At_PlayerEditor : Editor
         {
             if (AT_WS_initialize() == 0)
             {
-                s_audioManagerInitialized = true;
-                Debug.Log("[At_PlayerEditor] AudioManager initialized for Edit-mode metadata reading");
+                s_audioManagerInitialized = true;                
             }
         }
         catch (Exception ex)

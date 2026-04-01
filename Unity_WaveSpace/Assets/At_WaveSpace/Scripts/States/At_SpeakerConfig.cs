@@ -27,11 +27,11 @@ public class At_SpeakerConfig : MonoBehaviour
         int              outputConfigDimension,
         GameObject       virtualSpkParent)
     {
-        if      (outputConfigDimension == 1) linearConfig    (ref speakers, virtualSpeakerRigSize, outputChannelCount, virtualSpkParent);
-        else if (outputConfigDimension == 2) squareConfig    (ref speakers, virtualSpeakerRigSize, outputChannelCount, virtualSpkParent);
-        else if (outputConfigDimension == 3) squareConfig_34 (ref speakers, virtualSpeakerRigSize, outputChannelCount, virtualSpkParent);
-        else if (outputConfigDimension == 4) circleConfig    (ref speakers, virtualSpeakerRigSize, outputChannelCount, virtualSpkParent);
-        else if (outputConfigDimension == 5) circleConfig_12 (ref speakers, virtualSpeakerRigSize, outputChannelCount, virtualSpkParent);
+        if      (outputConfigDimension == 1) linearConfig       (ref speakers, virtualSpeakerRigSize, outputChannelCount, virtualSpkParent);
+        else if (outputConfigDimension == 2) squareConfig       (ref speakers, virtualSpeakerRigSize, outputChannelCount, virtualSpkParent);
+        else if (outputConfigDimension == 3) squareHalfConfig   (ref speakers, virtualSpeakerRigSize, outputChannelCount, virtualSpkParent);
+        else if (outputConfigDimension == 4) circleConfig       (ref speakers, virtualSpeakerRigSize, outputChannelCount, virtualSpkParent);
+        else if (outputConfigDimension == 5) circleHalfConfig_12(ref speakers, virtualSpeakerRigSize, outputChannelCount, virtualSpkParent);
     }
 
     // =========================================================================
@@ -129,46 +129,68 @@ public class At_SpeakerConfig : MonoBehaviour
     }
 
     // =========================================================================
-    // 2D — SQUARE 3/4
+    // 2D — HALF-SQUARE (3 sides: left, front, right — back side open)
+    // Speakers are distributed as evenly as possible across the three sides.
+    // For n speakers: side[i] gets n/3 + (1 if i < n%3 else 0) speakers.
+    // Speakers on each side are spaced with a half-step inset from the corners,
+    // matching the convention used by squareConfig.
     // =========================================================================
-    static void squareConfig_34(
+    static void squareHalfConfig(
         ref GameObject[] speakers,
         float virtualSpeakerRigSize,
         int   outputChannelCount,
         GameObject virtualSpkParent)
     {
         speakers = new GameObject[outputChannelCount];
+        Vector3 origin = virtualSpkParent.transform.parent.transform.position;
 
-        int   numPerSide    = outputChannelCount / 3;
-        float interDistance = virtualSpeakerRigSize / numPerSide;
-        float distStep      = interDistance / 2f;
-        Vector3 position    = Vector3.zero;
-        float   spkAngle    = 0f;
-        Vector3 origin      = virtualSpkParent.transform.parent.transform.position;
+        // Distribute outputChannelCount speakers across 3 sides as evenly as possible.
+        int n0 = outputChannelCount / 3 + (outputChannelCount % 3 > 0 ? 1 : 0); // left
+        int n1 = outputChannelCount / 3 + (outputChannelCount % 3 > 1 ? 1 : 0); // front
+        int n2 = outputChannelCount - n0 - n1;                                   // right
 
-        for (int i = 0; i < outputChannelCount; i++)
+        int spkIdx = 0;
+
+        // ── Left side (X = -rigSize/2), speakers face right (+X, Y angle = 90°) ──
+        if (n0 > 0)
         {
-            if (i < outputChannelCount / 3)
+            float step = virtualSpeakerRigSize / n0;
+            for (int i = 0; i < n0; i++, spkIdx++)
             {
-                position.x = -virtualSpeakerRigSize / 2f;
-                position.z = -virtualSpeakerRigSize / 2f + distStep;
-                spkAngle   = 90f;    // faces +X (inward from left wall)
+                Vector3 pos = origin + new Vector3(
+                    -virtualSpeakerRigSize / 2f,
+                     0f,
+                    -virtualSpeakerRigSize / 2f + step * 0.5f + i * step);
+                speakers[spkIdx] = createSpeaker(spkIdx, pos, new Vector3(0f, 90f, 0f), virtualSpkParent);
             }
-            else if (i < 2 * outputChannelCount / 3)
-            {
-                position.x = -virtualSpeakerRigSize / 2f + (distStep - (outputChannelCount / 3) * interDistance);
-                position.z =  virtualSpeakerRigSize / 2f;
-                spkAngle   = 180f;   // faces -Z (inward from front wall)
-            }
-            else
-            {
-                position.x =  virtualSpeakerRigSize / 2f;
-                position.z =  virtualSpeakerRigSize / 2f - (distStep - (outputChannelCount * 2 / 3) * interDistance);
-                spkAngle   = 270f;   // faces -X (inward from right wall)
-            }
-            distStep += interDistance;
+        }
 
-            speakers[i] = createSpeaker(i, origin + position, new Vector3(0f, spkAngle, 0f), virtualSpkParent);
+        // ── Front side (Z = +rigSize/2), speakers face inward (-Z, Y angle = 180°) ─
+        if (n1 > 0)
+        {
+            float step = virtualSpeakerRigSize / n1;
+            for (int i = 0; i < n1; i++, spkIdx++)
+            {
+                Vector3 pos = origin + new Vector3(
+                    -virtualSpeakerRigSize / 2f + step * 0.5f + i * step,
+                     0f,
+                     virtualSpeakerRigSize / 2f);
+                speakers[spkIdx] = createSpeaker(spkIdx, pos, new Vector3(0f, 180f, 0f), virtualSpkParent);
+            }
+        }
+
+        // ── Right side (X = +rigSize/2), speakers face left (-X, Y angle = 270°) ──
+        if (n2 > 0)
+        {
+            float step = virtualSpeakerRigSize / n2;
+            for (int i = 0; i < n2; i++, spkIdx++)
+            {
+                Vector3 pos = origin + new Vector3(
+                     virtualSpeakerRigSize / 2f,
+                     0f,
+                     virtualSpeakerRigSize / 2f - step * 0.5f - i * step);
+                speakers[spkIdx] = createSpeaker(spkIdx, pos, new Vector3(0f, 270f, 0f), virtualSpkParent);
+            }
         }
     }
 
@@ -210,9 +232,9 @@ public class At_SpeakerConfig : MonoBehaviour
     }
 
     // =========================================================================
-    // 2D — CIRCLE 1/2
+    // 2D — HALF-CIRCLE
     // =========================================================================
-    static void circleConfig_12(
+    static void circleHalfConfig_12(
         ref GameObject[] speakers,
         float virtualSpeakerRigSize,
         int   outputChannelCount,

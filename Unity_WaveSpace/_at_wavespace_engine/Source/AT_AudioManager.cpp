@@ -601,6 +601,20 @@ namespace AT
         int bufferSize,
         bool isBinauralVirtualization)
     {
+        // ── Wait for the async device scan to finish ─────────────────────────────
+        // AudioManager's constructor starts an asynchronous device scan.  On Windows
+        // the scan includes ASIO drivers, which hold exclusive COM/driver resources
+        // while running.  If setup() is called before the scan thread completes,
+        // SpatializationEngine::setup() → m_deviceManager.initialise() may fail
+        // because the background thread still owns those resources.
+        // Waiting here (up to 10 s) is safe: the call is cheap when the scan has
+        // already finished (atomic check), and it eliminates the race on every platform.
+        if (!m_devicesCachedAtomic.load())
+        {
+            LOG("AudioManager::setup - waiting for device scan to complete...");
+            waitForDeviceScan(10000);
+        }
+
         // Store the binaural flag and virtual speaker count before configuring the engine
         m_isBinauralVirtualization = isBinauralVirtualization;
         m_numVirtualSpeakers = numVirtualSpeakers;

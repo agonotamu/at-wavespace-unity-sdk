@@ -282,7 +282,7 @@ public class At_MixerWindow : EditorWindow
         if (newGain != currentGain && onGainChanged != null)
         {
             try { onGainChanged(newGain); }
-            catch (System.Exception e) { Debug.LogWarning($"Error updating gain: {e.Message}"); }
+            catch { }
         }
         GUILayout.Label($"{(int)currentGain}", EditorStyles.miniLabel);
         EditorGUILayout.EndVertical();

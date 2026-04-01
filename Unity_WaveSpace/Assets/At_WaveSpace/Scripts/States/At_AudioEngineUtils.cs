@@ -28,9 +28,7 @@ public class At_AudioEngineUtils : MonoBehaviour
 
     static At_AudioEngineUtils()
     {
-        Debug.Log("[AudioEngineUtils] Loading state files...");
         LoadAll();
-        Debug.Log("[AudioEngineUtils] State files loaded.");
     }
 
     // -------------------------------------------------------------------------
@@ -109,6 +107,17 @@ public class At_AudioEngineUtils : MonoBehaviour
     {
         if (!audioEngineStatesDictionary.ContainsKey(sceneName)) return null;
         return audioEngineStatesDictionary[sceneName]?.getPlayerState(guid);
+    }
+
+    /// <summary>
+    /// Removes the in-memory engine state for the given scene.
+    /// Called when the scene asset is deleted so that stale state is not reused
+    /// if a new scene with the same name is created later in the same Editor session.
+    /// </summary>
+    public static void RemoveSceneState(string sceneName)
+    {
+        if (audioEngineStatesDictionary.ContainsKey(sceneName))
+            audioEngineStatesDictionary.Remove(sceneName);
     }
 
     // -------------------------------------------------------------------------

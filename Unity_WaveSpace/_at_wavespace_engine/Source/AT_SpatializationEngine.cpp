@@ -1496,8 +1496,10 @@ namespace AT
     void SpatializationEngine::setMultithreadingEnabled(bool enabled)
     {
         m_useMultithreading.store(enabled, std::memory_order_release);
-        LOG(enabled ? "Multithreading ENABLED - " << m_audioThreadPool.getNumThreads() << " worker threads"
-                    : "Multithreading DISABLED - sequential processing");
+        if (enabled)
+            LOG("Multithreading ENABLED - " << m_audioThreadPool.getNumThreads() << " worker threads");
+        else
+            LOG("Multithreading DISABLED - sequential processing");
     }
 
     bool SpatializationEngine::isMultithreadingEnabled() const

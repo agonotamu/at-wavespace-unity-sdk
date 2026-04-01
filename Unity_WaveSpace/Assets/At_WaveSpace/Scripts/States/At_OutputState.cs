@@ -73,6 +73,16 @@ public class At_OutputState
     /// <summary>Number of WFS virtual speakers (output channels).</summary>
     public int numVirtualSpeakers = 2;
 
+    /// <summary>
+    /// Raw virtual speaker count from the last loaded .spatconfig file.
+    /// Preserved independently of any device-limit clamping applied to
+    /// numVirtualSpeakers in non-binaural mode.  When binaural virtualization
+    /// is enabled, numVirtualSpeakers is restored to this value so all virtual
+    /// speakers are active regardless of the physical output channel count.
+    /// 0 means no custom config has been loaded (standard or unset).
+    /// </summary>
+    public int numVirtualSpeakersConfig = 0;
+
     // =========================================================================
     // Global player settings — applied to ALL players, serialised here so
     // they belong to the output/engine configuration (not per-player state).

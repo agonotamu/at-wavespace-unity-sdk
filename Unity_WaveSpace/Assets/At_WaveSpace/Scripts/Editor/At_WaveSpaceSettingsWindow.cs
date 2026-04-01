@@ -373,8 +373,6 @@ public class At_WaveSpaceSettingsWindow : EditorWindow
         Selection.activeGameObject = instance;
         EditorGUIUtility.PingObject(instance);
 
-        Debug.Log("[AT WaveSpace] WavefrontDisplay added at " + spawnPosition +
-                  "  scale=" + planeScale + " (rig size=" + rigSize + " m)");
     }
 
     private void BuildStyles()

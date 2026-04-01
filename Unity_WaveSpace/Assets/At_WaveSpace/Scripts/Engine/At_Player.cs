@@ -328,8 +328,7 @@ public class At_Player : MonoBehaviour
     {
         fixed (float* ptr = delay)
         {
-            if (AT_WS_getPlayerWfsDelay(id, (IntPtr)ptr, arraySize) == AUDIO_PLUGIN_ERROR)
-                Debug.LogError("[AudioPlugin] Cannot get player WFS delays");
+            AT_WS_getPlayerWfsDelay(id, (IntPtr)ptr, arraySize);
         }
     }
 
@@ -338,8 +337,7 @@ public class At_Player : MonoBehaviour
     {
         fixed (float* ptr = volume)
         {
-            if (AT_WS_getPlayerWfsLinGain(id, (IntPtr)ptr, arraySize) == AUDIO_PLUGIN_ERROR)
-                Debug.LogError("[AudioPlugin] Cannot get player WFS linear gain");
+            AT_WS_getPlayerWfsLinGain(id, (IntPtr)ptr, arraySize);
         }
     }
 
@@ -348,8 +346,7 @@ public class At_Player : MonoBehaviour
     {
         fixed (float* ptr = speakerMask)
         {
-            if (AT_WS_getPlayerSpeakerMask(id, (IntPtr)ptr, arraySize) == AUDIO_PLUGIN_ERROR)
-                Debug.LogError("[AudioPlugin] Cannot get player speaker mask");
+            AT_WS_getPlayerSpeakerMask(id, (IntPtr)ptr, arraySize);
         }
     }
 
@@ -359,8 +356,7 @@ public class At_Player : MonoBehaviour
         fixed (float* ptr = meters)
         {
             if (arraySize <= 0 || meters == null || meters.Length == 0) return;
-            if (AT_WS_getPlayerMeters(id, (IntPtr)ptr, arraySize) == AUDIO_PLUGIN_ERROR)
-                Debug.LogError("[AudioPlugin] Cannot get player meters");
+            AT_WS_getPlayerMeters(id, (IntPtr)ptr, arraySize);
         }
     }
     #endregion

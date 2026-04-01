@@ -50,7 +50,7 @@ public class At_MasterOutputEditor : Editor
     private At_MasterOutput masterOutput;
 
     private readonly string[] outputConfigSelection = {
-        "select", "1D", "2D SQUARE", "2D SQUARE 0.75", "2D CIRCLE", "2D CIRCLE 0.5", "Custom"
+        "select", "1D", "2D SQUARE", "2D HALF-SQUARE", "2D CIRCLE", "2D HALF-CIRCLE", "Custom"
     };
     private readonly string[] samplingRateConfigSelection = { "44100", "48000" };
     private readonly string[] bufferSizeConfigSelection   = { "64", "128", "256", "512", "1024", "2048" };
@@ -74,6 +74,28 @@ public class At_MasterOutputEditor : Editor
     private static List<AudioDeviceInfo> cachedDevices      = null;
     private static bool   devicesNeedRefresh                = true;
     private static double lastDeviceRefreshTime             = 0;
+
+    // Deferred spatconfig actions — set by the Load/Save buttons in
+    // DrawSpeakerConfigSection and executed via EditorApplication.delayCall.
+    // Calling OpenFilePanel / SaveFilePanel / DisplayDialog directly inside an
+    // IMGUI layout pass triggers ExitGUIException, aborting the pass before all
+    // EndHorizontal calls are reached → "EndLayoutGroup: BeginLayoutGroup must
+    // be called first".  delayCall runs after the current pass completes.
+    private bool m_pendingSpatConfigLoad = false;
+    private bool m_pendingSpatConfigSave = false;
+
+    // Deferred HRTF file open — set by the Load button, consumed via
+    // EditorApplication.delayCall to avoid ExitGUIException from OpenFilePanel
+    // aborting the layout pass before EndHorizontal / EndVertical are reached.
+    private bool m_pendingHRTFLoad = false;
+
+    // Deferred binaural auto-switch warning dialog.
+    // Triggered whenever numVirtualSpeakers > physical device output channels
+    // in non-binaural mode.  Instead of clamping, the engine is automatically
+    // switched to binaural virtualization and the user is notified via a dialog
+    // opened outside the current IMGUI layout pass (delayCall pattern).
+    private bool   m_pendingBinauralAutoSwitch        = false;
+    private string m_pendingBinauralAutoSwitchMessage = "";
     #endregion
 
     #region Initialization
@@ -196,8 +218,7 @@ public class At_MasterOutputEditor : Editor
         availableDevices.Clear();
 
         int deviceCount = AT_WS_getDeviceCount();
-        if (deviceCount < 0)  { Debug.LogError("[AudioPlugin] Failed to get device count"); return availableDevices; }
-        if (deviceCount == 0) { Debug.LogWarning("[AudioPlugin] No audio devices found");   return availableDevices; }
+        if (deviceCount <= 0) { Debug.LogError("[AudioPlugin] Failed to get device count"); return availableDevices; }
 
         for (int i = 0; i < deviceCount; i++)
         {
@@ -207,15 +228,9 @@ public class At_MasterOutputEditor : Editor
             {
                 int maxIn = 0, maxOut = 0;
                 if (AT_WS_getCachedDeviceInfo(i, nameBuffer, typeBuffer, ref maxIn, ref maxOut) != AUDIO_PLUGIN_OK)
-                {
-                    Debug.LogWarning($"[AudioPlugin] Skipping device {i} (error reading info)");
                     continue;
-                }
                 if (maxOut <= 0)
-                {
-                    Debug.LogWarning($"[AudioPlugin] Skipping output-less device: {Marshal.PtrToStringAnsi(nameBuffer)}");
                     continue;
-                }
                 availableDevices.Add(new AudioDeviceInfo
                 {
                     index             = i,
@@ -236,14 +251,11 @@ public class At_MasterOutputEditor : Editor
     private void RefreshDeviceList()
     {
         AT_WS_initialize();
-        if (AT_WS_waitForDeviceScan(10000) == 0)
-            Debug.LogWarning("[AudioPlugin] Device scan timeout");
-
+        AT_WS_waitForDeviceScan(10000);
         AT_WS_filterUnavailableDevices();
         cachedDevices         = EnumerateDevices();
         devicesNeedRefresh    = false;
         lastDeviceRefreshTime = EditorApplication.timeSinceStartup;
-        Debug.Log($"[AudioPlugin] Found {cachedDevices.Count} device(s)");
     }
 
     private int GetSelectedDeviceMaxOutputChannels()
@@ -253,7 +265,7 @@ public class At_MasterOutputEditor : Editor
             return 2;
 
         AudioDeviceInfo info = availableDevices[selectedDeviceIndex];
-        if (info.maxOutputChannels == 0)  { Debug.LogWarning($"[AudioPlugin] Device '{info.name}' unavailable"); return 2; }
+        if (info.maxOutputChannels == 0)  return 2;
         if (info.maxOutputChannels != -1) return info.maxOutputChannels;
 
         // Lazy detailed query
@@ -438,7 +450,10 @@ public class At_MasterOutputEditor : Editor
             EditorGUILayout.BeginHorizontal();
             GUILayout.FlexibleSpace();
             if (GUILayout.Button("📂 Load Speaker Config", GUILayout.Width(190), GUILayout.Height(28)))
-                ApplyCustomSpeakerConfiguration();
+            {
+                m_pendingSpatConfigLoad = true;
+                EditorApplication.delayCall += ExecutePendingSpatConfigLoad;
+            }
             GUILayout.FlexibleSpace();
             EditorGUILayout.EndHorizontal();
 
@@ -446,7 +461,10 @@ public class At_MasterOutputEditor : Editor
             EditorGUILayout.BeginHorizontal();
             GUILayout.FlexibleSpace();
             if (GUILayout.Button("💾 Save Speaker Config", GUILayout.Width(190), GUILayout.Height(28)))
-                SaveCustomSpeakerConfiguration();
+            {
+                m_pendingSpatConfigSave = true;
+                EditorApplication.delayCall += ExecutePendingSpatConfigSave;
+            }
             GUILayout.FlexibleSpace();
             EditorGUILayout.EndHorizontal();
 
@@ -483,13 +501,15 @@ public class At_MasterOutputEditor : Editor
                 int deviceMax = GetSelectedDeviceMaxOutputChannels();
                 if (!outputState.isBinauralVirtualization && numVS > deviceMax)
                 {
-                    Debug.LogWarning($"[AudioPlugin] Clamping speaker count to device maximum ({deviceMax})");
-                    numVS = deviceMax;
+                    // Automatically switch to binaural virtualization instead of
+                    // silently clamping — clamping would leave speakers inactive
+                    // with no audio feedback for the user.
+                    SwitchToBinauralWithWarning(numVS, deviceMax);
                 }
 
                 bool invalid = numVS <= 1 || numVS > 1024
                     || (outputConfigDimension == 2 && numVS % 4 != 0)
-                    || (outputConfigDimension == 3 && numVS % 3 != 0);
+                    || (outputConfigDimension == 3 && numVS < 3);
 
                 if (invalid)
                 {
@@ -562,10 +582,19 @@ public class At_MasterOutputEditor : Editor
             AssetDatabase.Refresh();
         }
 
-        string jsonPath = EditorUtility.OpenFilePanelWithFilters(
-            "Load Speaker Config", spatConfigDir,
-            new[] { "Speaker Config", "spatconfig", "All files", "*" });
+        // Show all files — OpenFilePanelWithFilters and OpenFilePanel(ext) both fail
+        // to display non-registered extensions on Windows.  Extension validation is
+        // done manually after selection.
+        string jsonPath = EditorUtility.OpenFilePanel("Load Speaker Config", spatConfigDir, "");
         if (string.IsNullOrEmpty(jsonPath)) return;
+
+        if (!jsonPath.EndsWith(".spatconfig", System.StringComparison.OrdinalIgnoreCase))
+        {
+            EditorUtility.DisplayDialog("Wrong File Type",
+                $"'{Path.GetFileName(jsonPath)}' is not a .spatconfig file.\n" +
+                "Please select a valid speaker configuration file.", "OK");
+            return;
+        }
 
         At_SpatialConfigState config;
         try   { config = JsonUtility.FromJson<At_SpatialConfigState>(File.ReadAllText(jsonPath)); }
@@ -584,31 +613,31 @@ public class At_MasterOutputEditor : Editor
             return;
         }
 
-        // ── 1b. Device channel count guard (non-binaural mode only) ──────
-        // In binaural mode the physical output is always 2 channels regardless of
-        // the virtual speaker count — JUCE receives outputChannels=2 and the guard
-        // is not needed. In direct WFS mode numVirtualSpeakers equals physical
-        // output channels: requesting more than the device supports causes JUCE to
-        // crash inside AudioDeviceManager::initialise() with no recoverable path.
-        // We block the load here (Edit time) rather than letting the crash occur
-        // at Play-mode entry.
+        // ── 1b. Determine effective virtual speaker count ─────────────────
+        // In binaural mode numVirtualSpeakers is decoupled from physical output
+        // channels (physical output is always 2).  All n speakers are loaded into
+        // the scene and the engine creates n HRTF processors.
+        // In non-binaural mode numVirtualSpeakers equals physical output channels,
+        // so it must not exceed the device maximum.  We still create all n speaker
+        // GameObjects in the scene (for correct visualization and so the full rig
+        // is ready when binaural is later enabled), but we clamp the effective
+        // count passed to the engine.
+        int effectiveVS = n;
         if (!outputState.isBinauralVirtualization)
         {
             int deviceMax = GetSelectedDeviceMaxOutputChannels();
             if (deviceMax > 0 && n > deviceMax)
             {
-                EditorUtility.DisplayDialog(
-                    "Channel Count Mismatch",
-                    $"The speaker config '{Path.GetFileName(jsonPath)}' requires {n} output channels,\n" +
-                    $"but the selected device '{outputState.audioDeviceName}' only supports {deviceMax}.\n\n" +
-                    "Solutions:\n" +
-                    $"  • Enable Binaural Virtualization to decouple virtual speaker count from physical outputs.\n" +
-                    $"  • Select a device with at least {n} output channels.\n" +
-                    $"  • Use a speaker config with ≤ {deviceMax} speakers.",
-                    "OK");
-                return;
+                // Automatically switch to binaural virtualization so all n virtual
+                // speakers are active regardless of the physical output channel count.
+                SwitchToBinauralWithWarning(n, deviceMax);
+                // effectiveVS stays n — binaural is now ON, no channel count limit applies.
             }
         }
+
+        // Store the raw config count before any clamping — used to restore the
+        // full virtual speaker count when binaural virtualization is later enabled.
+        outputState.numVirtualSpeakersConfig = n;
 
         // ── 2. Destroy existing VirtualSpeakers & parent ──────────────────
         At_VirtualSpeaker[] existingVss = FindObjectsOfType<At_VirtualSpeaker>();
@@ -651,22 +680,22 @@ public class At_MasterOutputEditor : Editor
         float   rigSize  = Mathf.Max(Vector3.Distance(posFirst, posLast), 0.1f);
 
         // ── 5. Update counts ──────────────────────────────────────────────
-        int channelCount = outputState.isBinauralVirtualization ? 2 : n;
+        int channelCount = outputState.isBinauralVirtualization ? 2 : effectiveVS;
 
-        outputState.numVirtualSpeakers    = n;
+        outputState.numVirtualSpeakers    = effectiveVS;
         outputState.outputChannelCount    = channelCount;
         outputState.outputConfigDimension = 0;
         outputState.selectSpeakerConfig   = 6;
         outputState.virtualSpeakerRigSize = rigSize;
 
-        masterOutput.numVirtualSpeakers    = n;
+        masterOutput.numVirtualSpeakers    = effectiveVS;
         masterOutput.outputChannelCount    = channelCount;
         masterOutput.outputConfigDimension = 0;
         masterOutput.virtualSpeakerRigSize = rigSize;
         masterOutput.virtualSpeakers       = FindObjectsOfType<At_VirtualSpeaker>();
 
         foreach (At_Player p in FindObjectsOfType<At_Player>())
-            p.outputChannelCount = n;
+            p.outputChannelCount = effectiveVS;
 
         meters = new float[channelCount];
 
@@ -674,8 +703,6 @@ public class At_MasterOutputEditor : Editor
         selectSpeakerConfig = 6;
         shouldSave          = true;
         EditorSceneManager.SaveScene(SceneManager.GetActiveScene());
-
-        Debug.Log($"[AT_WS] Speaker config loaded from {Path.GetFileName(jsonPath)}: {n} speakers, rig size {rigSize:F2} m.");
     }
 
     /// <summary>
@@ -730,14 +757,21 @@ public class At_MasterOutputEditor : Editor
             "Save Speaker Config", spatConfigDir, "SpeakerConfig", "spatconfig");
         if (string.IsNullOrEmpty(savePath)) return;
 
+        // SaveFilePanel does not append the extension on Windows for non-registered
+        // file types.  Ensure the path always ends with .spatconfig regardless of
+        // what the OS dialog returned.
+        if (!savePath.EndsWith(".spatconfig", System.StringComparison.OrdinalIgnoreCase))
+            savePath += ".spatconfig";
+
         try
         {
             File.WriteAllText(savePath, JsonUtility.ToJson(config, true));
             AssetDatabase.Refresh();
-            string fname = Path.GetFileName(savePath);
-            EditorUtility.DisplayDialog("Saved",
-                $"{fname} saved with {n} speakers.\n{savePath}", "OK");
-            Debug.Log($"[AT_WS] Speaker config saved: {n} speakers → {savePath}");
+            string fname  = Path.GetFileName(savePath);
+            string folder = Path.GetFileName(Path.GetDirectoryName(savePath));
+            // Non-modal floating notification — fades automatically without user interaction.
+            SceneView.lastActiveSceneView?.ShowNotification(
+                new GUIContent($"✓ {fname} saved in {folder}/"), 2.0);
         }
         catch (Exception e)
         {
@@ -919,29 +953,71 @@ public class At_MasterOutputEditor : Editor
                 // virtual speaker count — no channel count check needed.
                 outputState.outputChannelCount  = 2;
                 masterOutput.outputChannelCount = 2;
+
+                // Restore the full virtual speaker count from the last loaded
+                // .spatconfig, which may have been clamped to the device maximum
+                // when binaural was previously off.
+                if (outputState.selectSpeakerConfig == 6 &&
+                    outputState.numVirtualSpeakersConfig > outputState.numVirtualSpeakers)
+                {
+                    outputState.numVirtualSpeakers  = outputState.numVirtualSpeakersConfig;
+                    masterOutput.numVirtualSpeakers = outputState.numVirtualSpeakersConfig;
+                    foreach (At_Player p in FindObjectsOfType<At_Player>())
+                        p.outputChannelCount = outputState.numVirtualSpeakersConfig;
+                }
             }
             else
             {
-                // Binaural OFF: virtual speakers map 1-to-1 to physical output channels.
-                // Clamp numVirtualSpeakers to the device maximum to prevent JUCE from
-                // requesting more output channels than the device supports at setup time.
+                // Binaural OFF: virtual speakers would map 1-to-1 to physical channels.
+                // If numVirtualSpeakers exceeds the device maximum, revert the toggle
+                // instead of clamping — clamping would silently discard speakers and
+                // produce unexpected silence in WFS mode.
+                int targetVS  = (outputState.selectSpeakerConfig == 6 && outputState.numVirtualSpeakersConfig > 0)
+                    ? outputState.numVirtualSpeakersConfig
+                    : outputState.numVirtualSpeakers;
                 int deviceMax = GetSelectedDeviceMaxOutputChannels();
-                if (deviceMax > 0 && outputState.numVirtualSpeakers > deviceMax)
+                if (deviceMax > 0 && targetVS > deviceMax)
                 {
-                    Debug.LogWarning($"[AudioPlugin] Binaural disabled: clamping virtual speaker count " +
-                                     $"from {outputState.numVirtualSpeakers} to device maximum ({deviceMax}). " +
-                                     "Enable Binaural Virtualization to use more virtual speakers than " +
-                                     "the device has physical output channels.");
-                    outputState.numVirtualSpeakers  = deviceMax;
-                    masterOutput.numVirtualSpeakers = deviceMax;
+                    // Revert the toggle — keep binaural ON.
+                    outputState.isBinauralVirtualization  = true;
+                    masterOutput.isBinauralVirtualization = true;
+                    outputState.outputChannelCount        = 2;
+                    masterOutput.outputChannelCount       = 2;
+                    SwitchToBinauralWithWarning(targetVS, deviceMax);
                 }
-                outputState.outputChannelCount  = outputState.numVirtualSpeakers;
-                masterOutput.outputChannelCount = outputState.numVirtualSpeakers;
+                else
+                {
+                    outputState.numVirtualSpeakers  = targetVS;
+                    masterOutput.numVirtualSpeakers = targetVS;
+                    outputState.outputChannelCount  = targetVS;
+                    masterOutput.outputChannelCount = targetVS;
+                }
             }
 
             shouldSave = true;
         }
         EditorGUILayout.EndHorizontal();
+
+        // Show an inline notice when binaural cannot be disabled because the
+        // virtual speaker count exceeds the physical output channel count of
+        // the selected device.  The notice is displayed both when binaural is
+        // already ON (to explain the lock) and when binaural is OFF but the
+        // condition is met (to explain why it was auto-switched).
+        {
+            int targetVS  = (outputState.selectSpeakerConfig == 6 && outputState.numVirtualSpeakersConfig > 0)
+                ? outputState.numVirtualSpeakersConfig
+                : outputState.numVirtualSpeakers;
+            int deviceMax = GetSelectedDeviceMaxOutputChannels();
+            if (deviceMax > 0 && targetVS > deviceMax)
+            {
+                EditorGUILayout.HelpBox(
+                    $"Binaural Virtualization cannot be disabled: {targetVS} Virtual Speakers " +
+                    $"exceed the {deviceMax} physical output channels of the selected device.\n" +
+                    "To disable it: reduce \"Num. Virtual Speakers\" or select a device " +
+                    "with enough physical output channels.",
+                    MessageType.Warning);
+            }
+        }
 
         if (!outputState.isBinauralVirtualization) return;
 
@@ -960,46 +1036,18 @@ public class At_MasterOutputEditor : Editor
         GUILayout.FlexibleSpace();
         if (GUILayout.Button("Load HRTF File (.txt)", GUILayout.Width(150), GUILayout.Height(25)))
         {
-            // Open the file browser directly in StreamingAssets/HRTF
-            string hrtfDir = System.IO.Path.Combine(Application.streamingAssetsPath, "HRTF");
-            if (!System.IO.Directory.Exists(hrtfDir))
-                hrtfDir = Application.streamingAssetsPath;
-
-            string absPath = EditorUtility.OpenFilePanel("Select HRTF Data File", hrtfDir, "txt");
-            if (!string.IsNullOrEmpty(absPath))
-            {
-                // Store path relative to StreamingAssets so it stays valid across machines / OS
-                string streamingRoot = Application.streamingAssetsPath.Replace('\\', '/');
-                string normalizedAbs = absPath.Replace('\\', '/');
-                string relativePath  = normalizedAbs.StartsWith(streamingRoot)
-                    ? normalizedAbs.Substring(streamingRoot.Length).TrimStart('/')
-                    : absPath;   // fallback: keep absolute if selected outside StreamingAssets
-
-                // Full path used at runtime to load the file
-                string fullPath = System.IO.Path.Combine(Application.streamingAssetsPath, relativePath);
-
-                outputState.hrtfFilePath  = relativePath;
-                masterOutput.hrtfFilePath = fullPath;
-
-                if (Application.isPlaying && masterOutput.isInitialized)
-                {
-                    bool ok = masterOutput.LoadHRTFFile(fullPath);
-                    EditorUtility.DisplayDialog(ok ? "HRTF Loaded" : "HRTF Load Failed",
-                        ok ? "HRTF loaded: " + System.IO.Path.GetFileName(fullPath)
-                           : "Failed to load HRTF. Check console for details.", "OK");
-                }
-                shouldSave = true;
-            }
+            // Defer OpenFilePanel outside the current layout pass.
+            // Calling it directly triggers ExitGUIException, which aborts the pass
+            // before EndHorizontal and EndVertical are reached.
+            m_pendingHRTFLoad = true;
+            EditorApplication.delayCall += ExecutePendingHRTFLoad;
         }
         if (GUILayout.Button("Use Default HRTF", GUILayout.Width(150), GUILayout.Height(25)))
         {
             outputState.hrtfFilePath  = "";
             masterOutput.hrtfFilePath = "";
             if (Application.isPlaying && masterOutput.isInitialized)
-            {
                 masterOutput.LoadDefaultHRTF();
-                EditorUtility.DisplayDialog("Default HRTF", "Default built-in HRTF loaded.", "OK");
-            }
             shouldSave = true;
         }
         GUILayout.FlexibleSpace();
@@ -1141,6 +1189,112 @@ public class At_MasterOutputEditor : Editor
         GUI.color = color;
         GUILayout.Box(GUIContent.none, horizontalLine);
         GUI.color = c;
+    }
+    #endregion
+
+    #region Deferred Actions
+    /// <summary>
+    /// Executes the spatconfig load dialog outside the IMGUI layout pass.
+    /// Registered via EditorApplication.delayCall when the Load button is pressed.
+    /// </summary>
+    private void ExecutePendingSpatConfigLoad()
+    {
+        if (!m_pendingSpatConfigLoad || masterOutput == null) return;
+        m_pendingSpatConfigLoad = false;
+        ApplyCustomSpeakerConfiguration();
+        Repaint();
+    }
+
+    /// <summary>
+    /// Executes the spatconfig save dialog outside the IMGUI layout pass.
+    /// Registered via EditorApplication.delayCall when the Save button is pressed.
+    /// </summary>
+    private void ExecutePendingSpatConfigSave()
+    {
+        if (!m_pendingSpatConfigSave || masterOutput == null) return;
+        m_pendingSpatConfigSave = false;
+        SaveCustomSpeakerConfiguration();
+        Repaint();
+    }
+
+    /// <summary>
+    /// Opens the HRTF file dialog and applies the result.
+    /// Called via EditorApplication.delayCall to run outside the IMGUI layout pass —
+    /// OpenFilePanel triggers ExitGUIException which aborts the pass before
+    /// EndHorizontal and EndVertical are reached.
+    /// </summary>
+    private void ExecutePendingHRTFLoad()
+    {
+        if (!m_pendingHRTFLoad || masterOutput == null) return;
+        m_pendingHRTFLoad = false;
+
+        string hrtfDir = System.IO.Path.Combine(Application.streamingAssetsPath, "HRTF");
+        if (!System.IO.Directory.Exists(hrtfDir))
+            hrtfDir = Application.streamingAssetsPath;
+
+        string absPath = EditorUtility.OpenFilePanel("Select HRTF Data File", hrtfDir, "txt");
+        if (string.IsNullOrEmpty(absPath)) return;
+
+        // Store path relative to StreamingAssets so it stays valid across machines / OS
+        string streamingRoot = Application.streamingAssetsPath.Replace('\\', '/');
+        string normalizedAbs = absPath.Replace('\\', '/');
+        string relativePath  = normalizedAbs.StartsWith(streamingRoot)
+            ? normalizedAbs.Substring(streamingRoot.Length).TrimStart('/')
+            : absPath;   // fallback: keep absolute if selected outside StreamingAssets
+
+        string fullPath = System.IO.Path.Combine(Application.streamingAssetsPath, relativePath);
+        outputState.hrtfFilePath  = relativePath;
+        masterOutput.hrtfFilePath = fullPath;
+
+        if (Application.isPlaying && masterOutput.isInitialized)
+        {
+            if (!masterOutput.LoadHRTFFile(fullPath))
+                Debug.LogError($"[AT_WS] Failed to load HRTF: {System.IO.Path.GetFileName(fullPath)}");
+        }
+
+        shouldSave = true;
+        Repaint();
+    }
+
+    /// <summary>
+    /// Switches the output to binaural virtualization mode and schedules a
+    /// dialog notifying the user.  Must be called from within an IMGUI layout
+    /// pass — the actual dialog is deferred via EditorApplication.delayCall to
+    /// avoid ExitGUIException aborting the current pass.
+    /// </summary>
+    /// <param name="numVS">Requested virtual speaker count.</param>
+    /// <param name="deviceMax">Physical output channel limit of the selected device.</param>
+    private void SwitchToBinauralWithWarning(int numVS, int deviceMax)
+    {
+        outputState.isBinauralVirtualization  = true;
+        masterOutput.isBinauralVirtualization = true;
+        outputState.outputChannelCount        = 2;
+        masterOutput.outputChannelCount       = 2;
+        shouldSave = true;
+
+        m_pendingBinauralAutoSwitchMessage =
+            $"Number of Virtual Speakers ({numVS}) greater than number of output device " +
+            $"channels ({deviceMax}).\n\n" +
+            "Automatic switch to Binaural Virtualization for 2-channel downmix.";
+
+        if (!m_pendingBinauralAutoSwitch)
+        {
+            m_pendingBinauralAutoSwitch = true;
+            EditorApplication.delayCall += ExecutePendingBinauralAutoSwitch;
+        }
+    }
+
+    /// <summary>
+    /// Opens the binaural auto-switch notification dialog.
+    /// Called via EditorApplication.delayCall to run outside the IMGUI layout pass.
+    /// </summary>
+    private void ExecutePendingBinauralAutoSwitch()
+    {
+        if (!m_pendingBinauralAutoSwitch) return;
+        m_pendingBinauralAutoSwitch = false;
+        EditorUtility.DisplayDialog("Binaural Virtualization Enabled",
+            m_pendingBinauralAutoSwitchMessage, "OK");
+        Repaint();
     }
     #endregion
 

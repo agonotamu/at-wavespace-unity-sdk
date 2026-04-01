@@ -205,11 +205,8 @@ public class At_MasterOutput : MonoBehaviour
     {
         if (!isInitialized) return;
 
-        if (AT_WS_setMasterGain(gain) == AUDIO_PLUGIN_ERROR)
-            Debug.LogError("[AudioPlugin] Cannot update master gain");
-
-        if (AT_WS_setMakeupMasterGain(makeupGain) == AUDIO_PLUGIN_ERROR)
-            Debug.LogError("[AudioPlugin] Cannot update master makeup gain");
+        AT_WS_setMasterGain(gain);
+        AT_WS_setMakeupMasterGain(makeupGain);
 
         UpdateVirtualSpeakerPosition();
 
@@ -268,9 +265,7 @@ public class At_MasterOutput : MonoBehaviour
         if (!Mathf.Approximately(secondarySourceSize, m_prevSecondarySourceSize))
         {
             outputState.secondarySourceSize = secondarySourceSize;
-
-            if (AT_WS_setSecondarySourceSize(secondarySourceSize) == AUDIO_PLUGIN_ERROR)
-                Debug.LogError("[AudioPlugin] Failed to set source size to " + secondarySourceSize);
+            AT_WS_setSecondarySourceSize(secondarySourceSize);
 
             // Keep visual shader coherent with the audio engine
             foreach (SoundWaveShaderManager swsm in FindObjectsOfType<SoundWaveShaderManager>())
@@ -315,9 +310,7 @@ public class At_MasterOutput : MonoBehaviour
             else
                 LoadDefaultHRTF();
 
-            if (AT_WS_setIsSimpleBinauralSpat(isSimpleBinauralSpat) == AUDIO_PLUGIN_OK)
-                Debug.Log($"[AudioPlugin] Simple binaural mode set to {isSimpleBinauralSpat}");
-            else
+            if (AT_WS_setIsSimpleBinauralSpat(isSimpleBinauralSpat) == AUDIO_PLUGIN_ERROR)
                 Debug.LogError($"[AudioPlugin] Failed to set simple binaural mode to {isSimpleBinauralSpat}");
         }
 
@@ -413,8 +406,7 @@ public class At_MasterOutput : MonoBehaviour
             m_speakerForwards[b + 2]  = t.forward.z;
         }
 
-        if (AT_WS_setVirtualSpeakerTransform(m_speakerPositions, m_speakerRotations, m_speakerForwards, numVirtualSpeakers) == AUDIO_PLUGIN_ERROR)
-            Debug.LogError("[AudioPlugin] Cannot update virtual speaker transforms");
+        AT_WS_setVirtualSpeakerTransform(m_speakerPositions, m_speakerRotations, m_speakerForwards, numVirtualSpeakers);
     }
 
     /// <summary>Returns the virtual speaker with the given index, or null.</summary>
@@ -439,7 +431,6 @@ public class At_MasterOutput : MonoBehaviour
         if (AT_WS_loadHRTF(filePath) == AUDIO_PLUGIN_OK)
         {
             hrtfFilePath = filePath;
-            Debug.Log("[AT_WS] HRTF loaded: " + filePath);
             return true;
         }
 
@@ -453,7 +444,6 @@ public class At_MasterOutput : MonoBehaviour
         if (AT_WS_loadDefaultHRTF() == AUDIO_PLUGIN_OK)
         {
             hrtfFilePath = "[Default]";
-            Debug.Log("[AT_WS] Default HRTF loaded");
         }
         else
         {
@@ -468,8 +458,7 @@ public class At_MasterOutput : MonoBehaviour
     {
         fixed (float* ptr = meters)
         {
-            if (AT_WS_getMixerOutputMeters((IntPtr)ptr, arraySize) == AUDIO_PLUGIN_ERROR)
-                Debug.LogError("[AudioPlugin] Cannot get mixer output meters");
+            AT_WS_getMixerOutputMeters((IntPtr)ptr, arraySize);
         }
     }
     #endregion

@@ -78,11 +78,7 @@ public class SoundWaveShaderManager : MonoBehaviour
         if (master == null) master = FindObjectOfType<At_MasterOutput>();
         if (player == null) player = Find3DPlayer();
 
-        if (master == null || player == null)
-        {
-            Debug.LogWarning("[SoundWaveShaderManager] At_MasterOutput or 3D At_Player not found — Init() aborted.");
-            return;
-        }
+        if (master == null || player == null) return;
 
         // ── Release previous resources if re-initialising ──
         ReleaseBuffers();
@@ -171,21 +167,13 @@ public class SoundWaveShaderManager : MonoBehaviour
     /// </summary>
     private void TryAutoInit()
     {
-        // Resolve references if not set in the Inspector
         if (master == null) master = FindObjectOfType<At_MasterOutput>();
         if (player == null) player = Find3DPlayer();
 
-        if (master == null || player == null)
-        {
-            // Engine not ready yet — Start() will retry, or the user must call Init() manually.
-            Debug.LogWarning("[SoundWaveShaderManager] Auto-init deferred: " +
-                             "At_MasterOutput or 3D At_Player not found in scene.");
-            return;
-        }
+        if (master == null || player == null) return;
 
         Init();
 
-        // Sync the secondary source size that was set before this object existed
         if (_initialized)
             SetSecondarySourceSize(master.secondarySourceSize);
     }
