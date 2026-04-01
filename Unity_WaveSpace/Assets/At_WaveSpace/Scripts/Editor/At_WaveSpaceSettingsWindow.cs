@@ -197,13 +197,25 @@ public class At_WaveSpaceSettingsWindow : EditorWindow
 
         EditorGUILayout.BeginHorizontal();
         GUILayout.FlexibleSpace();
-        if (GUILayout.Button("Add Wavefront Display to Scene",
-                             GUILayout.Width(250), GUILayout.Height(24)))
-        {
+        if (GUILayout.Button("Add Wavefront Display",
+                             GUILayout.Width(220), GUILayout.Height(24)))
             AddWavefrontDisplayPrefab();
-        }
         GUILayout.FlexibleSpace();
         EditorGUILayout.EndHorizontal();
+
+        GUILayout.Space(4);
+
+        bool displayExists = (GameObject.Find("WavefrontDisplay") != null);
+        using (new EditorGUI.DisabledScope(!displayExists))
+        {
+            EditorGUILayout.BeginHorizontal();
+            GUILayout.FlexibleSpace();
+            if (GUILayout.Button("Remove Wavefront Display",
+                                 GUILayout.Width(220), GUILayout.Height(24)))
+                RemoveWavefrontDisplay();
+            GUILayout.FlexibleSpace();
+            EditorGUILayout.EndHorizontal();
+        }
     }
 
     // ── PLAYERS section ───────────────────────────────────────────────────────
@@ -335,8 +347,35 @@ public class At_WaveSpaceSettingsWindow : EditorWindow
     // ── Wavefront Display instantiation ───────────────────────────────────────
     private const string WAVEFRONT_PREFAB_RESOURCE = "At_WaveSpace/WavefrontsVisualisation/WavefrontDisplay";
 
+    private void RemoveWavefrontDisplay()
+    {
+        GameObject display = GameObject.Find("WavefrontDisplay");
+        if (display == null)
+        {
+            EditorUtility.DisplayDialog(
+                "Not found",
+                "No 'WavefrontDisplay' object found in the scene.",
+                "OK");
+            return;
+        }
+
+        Undo.DestroyObjectImmediate(display);
+        EditorGUIUtility.ExitGUI(); // évite un repaint sur un objet détruit
+    }
+
     private void AddWavefrontDisplayPrefab()
     {
+        // Guard : ne pas ajouter si un WavefrontDisplay est déjà dans la scène
+        if (GameObject.Find("WavefrontDisplay") != null)
+        {
+            EditorUtility.DisplayDialog(
+                "Already in scene",
+                "A \'WavefrontDisplay\' object is already present in the scene.\n\n" +
+                "Use \'Remove Wavefront Display\' first if you want to replace it.",
+                "OK");
+            return;
+        }
+
         // Load the prefab asset from Resources
         GameObject prefab = Resources.Load<GameObject>(WAVEFRONT_PREFAB_RESOURCE);
         if (prefab == null)

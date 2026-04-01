@@ -96,12 +96,44 @@ public class At_MasterOutputEditor : Editor
     // opened outside the current IMGUI layout pass (delayCall pattern).
     private bool   m_pendingBinauralAutoSwitch        = false;
     private string m_pendingBinauralAutoSwitchMessage = "";
+
+    // True when this editor targets a duplicate At_MasterOutput pending
+    // destruction via delayCall. Prevents OnInspectorGUI from accessing
+    // uninitialized state in the frames before DestroyImmediate runs.
+    private bool m_isDuplicate = false;
     #endregion
 
     #region Initialization
     public void OnEnable()
     {
         masterOutput = (At_MasterOutput)target;
+
+        // ── Singleton guard: une seule instance de At_MasterOutput par scène ─
+        // OnEnable est appelé à chaque fois qu'un composant est sélectionné OU
+        // ajouté. Si plusieurs instances existent, c'est que l'utilisateur vient
+        // d'en ajouter une seconde → on la supprime via delayCall pour éviter
+        // tout conflit avec le pass IMGUI en cours.
+        {
+            At_MasterOutput[] all = FindObjectsOfType<At_MasterOutput>();
+            if (all.Length > 1)
+            {
+                m_isDuplicate = true;
+                At_MasterOutput duplicate = masterOutput;
+                EditorApplication.delayCall += () =>
+                {
+                    if (duplicate == null) return;
+                    string goName = duplicate.gameObject != null
+                        ? duplicate.gameObject.name : "unknown";
+                    EditorUtility.DisplayDialog(
+                        "At_MasterOutput — Single instance only",
+                        $"Only one At_MasterOutput is allowed per scene.\n\n" +
+                        $"The component just added on \"{goName}\" has been removed.",
+                        "OK");
+                    DestroyImmediate(duplicate);
+                };
+                return; // ne pas initialiser un duplicata
+            }
+        }
 
         // Ensure At_Listener exists in the scene
         if (FindObjectOfType<At_Listener>() == null)
@@ -293,6 +325,11 @@ public class At_MasterOutputEditor : Editor
     #region Inspector GUI
     public override void OnInspectorGUI()
     {
+        // Guard: ne rien dessiner si ce composant est un duplicata en attente
+        // de destruction (delayCall pas encore exécuté). Evite la NullReference
+        // sur horizontalLine / outputState non initialisés.
+        if (m_isDuplicate || masterOutput == null) return;
+
         AffirmResources();
 
         bool speakerConfigChanged = false;
