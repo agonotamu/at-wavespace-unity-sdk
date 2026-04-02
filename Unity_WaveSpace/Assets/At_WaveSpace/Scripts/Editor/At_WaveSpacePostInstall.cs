@@ -2,10 +2,10 @@
 /// @brief Post-install hook for the AT WaveSpace Unity package.
 ///
 /// @details
-/// Automatically removes the macOS quarantine extended attribute
-/// (com.apple.quarantine) from the native dylib after the .unitypackage
-/// is imported. This prevents Gatekeeper from blocking the plugin on
-/// machines that do not have the Apple Developer Program certificate.
+/// Automatically removes the invalid ad-hoc code signature and the macOS
+/// quarantine extended attribute (com.apple.quarantine) from the native dylib
+/// after the .unitypackage is imported, then forces Unity to reimport the
+/// plugin so the cleaned dylib is loaded immediately.
 ///
 /// Runs automatically via AssetPostprocessor — no user action required.
 /// Safe on Windows / Linux : the entire script is skipped on non-macOS editors.
@@ -17,11 +17,11 @@ using System.Diagnostics;
 
 public class At_WaveSpacePostInstall : AssetPostprocessor
 {
-    private const string DYLIB_NAME  = "at_wavespace_engine.dylib";
-    private const string XATTR_PATH  = "/usr/bin/xattr";
-    private const string XATTR_ARGS  = "-d com.apple.quarantine";
+    private const string DYLIB_NAME = "at_wavespace_engine.dylib";
+    private const string XATTR_PATH = "/usr/bin/xattr";
+    private const string XATTR_ARGS = "-d com.apple.quarantine";
 
-
+    // ── Debug menu ───────────────────────────────────────────────────────────
     [MenuItem("AT_WaveSpace/Debug/Test Post-Install")]
     static void TestPostInstall()
     {
@@ -32,20 +32,13 @@ public class At_WaveSpacePostInstall : AssetPostprocessor
             new string[0], new string[0], new string[0]);
     }
 
+    // ── AssetPostprocessor entry point ───────────────────────────────────────
     static void OnPostprocessAllAssets(
         string[] importedAssets,
         string[] deletedAssets,
         string[] movedAssets,
         string[] movedFromAssetPaths)
     {
-        UnityEngine.Debug.Log(
-        $"[AT WaveSpace] PostInstall called — platform: {Application.platform}\n" +
-        $"Imported: {string.Join("\n", importedAssets)}");
-
-        foreach (string path in importedAssets)
-            UnityEngine.Debug.Log($"[AT WaveSpace] Imported asset: '{path}'");
-
-            
         // Only relevant on macOS Editor
         if (Application.platform != RuntimePlatform.OSXEditor) return;
 
@@ -63,34 +56,52 @@ public class At_WaveSpacePostInstall : AssetPostprocessor
         if (dylibAssetPath == null) return;
 
         string absPath = Path.GetFullPath(dylibAssetPath);
-
         if (!File.Exists(absPath))
         {
             UnityEngine.Debug.LogWarning(
-                $"[AT WaveSpace] Post-install: dylib not found at expected path:\n{absPath}");
+                $"[AT WaveSpace] Post-install: dylib not found at:\n{absPath}");
             return;
         }
 
-        RemoveQuarantine(absPath);
+        // Step 1 — Remove invalid ad-hoc signature (blocked by Unity Hardened Runtime)
+        RunCommand("/usr/bin/codesign",
+                   $"--remove-signature \"{absPath}\"",
+                   "code signature removed",
+                   "could not remove code signature");
+
+        // Step 2 — Remove quarantine attribute (blocked by Gatekeeper)
+        if (HasQuarantineAttribute(absPath))
+            RunCommand(XATTR_PATH,
+                       $"{XATTR_ARGS} \"{absPath}\"",
+                       "quarantine attribute removed",
+                       "could not remove quarantine attribute");
+        else
+            UnityEngine.Debug.Log("[AT WaveSpace] Post-install: no quarantine attribute — skipping.");
+
+        // Step 3 — Force Unity to reload the dylib now that it is clean
+        PluginImporter importer = AssetImporter.GetAtPath(dylibAssetPath) as PluginImporter;
+        if (importer != null)
+        {
+            importer.SetCompatibleWithEditor(true);
+            importer.SaveAndReimport();
+            UnityEngine.Debug.Log("[AT WaveSpace] Post-install: plugin reimported — ready to use.");
+        }
+        else
+        {
+            UnityEngine.Debug.LogWarning(
+                "[AT WaveSpace] Post-install: could not get PluginImporter.\n" +
+                "Right-click the dylib in the Project window and select Reimport.");
+        }
     }
 
-    // -------------------------------------------------------------------------
-
-    private static void RemoveQuarantine(string absPath)
+    // ── Helpers ──────────────────────────────────────────────────────────────
+    private static void RunCommand(string exe, string args,
+                                   string successMsg, string failMsg)
     {
-        // Check first whether the attribute is actually present.
-        // xattr -p exits with code 1 if the attribute is absent — not an error.
-        if (!HasQuarantineAttribute(absPath))
-        {
-            UnityEngine.Debug.Log(
-                "[AT WaveSpace] Post-install: dylib has no quarantine attribute — nothing to do.");
-            return;
-        }
-
         var psi = new ProcessStartInfo
         {
-            FileName               = XATTR_PATH,
-            Arguments              = $"{XATTR_ARGS} \"{absPath}\"",
+            FileName               = exe,
+            Arguments              = args,
             UseShellExecute        = false,
             RedirectStandardOutput = true,
             RedirectStandardError  = true,
@@ -100,31 +111,18 @@ public class At_WaveSpacePostInstall : AssetPostprocessor
         using (var p = new Process { StartInfo = psi })
         {
             p.Start();
+            string stdout = p.StandardOutput.ReadToEnd();
             string stderr = p.StandardError.ReadToEnd();
-            string stdout = p.StandardOutput.ReadToEnd();        
             p.WaitForExit();
 
-            UnityEngine.Debug.Log(                         // ← et ce log
-                        $"[AT WaveSpace] xattr exit: {p.ExitCode}\n" +
-                        $"stdout: '{stdout}'\nstderr: '{stderr}'");
-
             if (p.ExitCode == 0)
-            {
-                UnityEngine.Debug.Log(
-                    $"[AT WaveSpace] Post-install: quarantine attribute removed from\n{absPath}");
-            }
+                UnityEngine.Debug.Log($"[AT WaveSpace] Post-install: {successMsg}.");
             else
-            {
                 UnityEngine.Debug.LogWarning(
-                    "[AT WaveSpace] Post-install: could not remove quarantine attribute.\n" +
-                    (string.IsNullOrEmpty(stderr) ? "" : $"xattr error: {stderr}\n") +
-                    "If the plugin fails to load, run this command manually in Terminal:\n" +
-                    $"  xattr -d com.apple.quarantine \"{absPath}\"");
-            }
+                    $"[AT WaveSpace] Post-install: {failMsg}.\n" +
+                    (string.IsNullOrEmpty(stderr) ? "" : $"stderr: {stderr}"));
         }
     }
-
-    // -------------------------------------------------------------------------
 
     private static bool HasQuarantineAttribute(string absPath)
     {
