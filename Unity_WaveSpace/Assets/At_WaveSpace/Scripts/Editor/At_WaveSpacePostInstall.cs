@@ -17,18 +17,19 @@ using System.Diagnostics;
 
 public class At_WaveSpacePostInstall : AssetPostprocessor
 {
-    private const string DYLIB_NAME = "at_wavespace_engine.dylib";
-    private const string XATTR_PATH = "/usr/bin/xattr";
-    private const string XATTR_ARGS = "-d com.apple.quarantine";
+    private const string DYLIB_NAME    = "at_wavespace_engine.dylib";
+    private const string XATTR_PATH    = "/usr/bin/xattr";
+    private const string XATTR_ARGS    = "-d com.apple.quarantine";
 
-    // Guard against the infinite loop caused by SaveAndReimport()
-    // triggering OnPostprocessAllAssets again.
-    private static bool s_isProcessing = false;
+    // SessionState key — persists across assembly reloads within an Editor session.
+    // A static bool would be reset when SaveAndReimport() triggers a domain reload.
+    private const string SESSION_KEY   = "AT_WaveSpace_PostInstall_Processing";
 
     // ── Debug menu ───────────────────────────────────────────────────────────
     [MenuItem("AT_WaveSpace/Debug/Test Post-Install")]
     static void TestPostInstall()
     {
+        SessionState.EraseBool(SESSION_KEY); // reset guard for manual test
         string[] fakeImport = {
             "Assets/At_WaveSpace/Plugins/MacOSX/at_wavespace_engine.dylib"
         };
@@ -46,8 +47,9 @@ public class At_WaveSpacePostInstall : AssetPostprocessor
         // Only relevant on macOS Editor
         if (Application.platform != RuntimePlatform.OSXEditor) return;
 
-        // Prevent re-entry from the SaveAndReimport() call below
-        if (s_isProcessing) return;
+        // Prevent re-entry from the SaveAndReimport() call below.
+        // SessionState survives domain reloads — a static bool would not.
+        if (SessionState.GetBool(SESSION_KEY, false)) return;
 
         // Find the dylib among the imported assets
         string dylibAssetPath = null;
@@ -65,7 +67,7 @@ public class At_WaveSpacePostInstall : AssetPostprocessor
         string absPath = Path.GetFullPath(dylibAssetPath);
         if (!File.Exists(absPath)) return;
 
-        s_isProcessing = true;
+        SessionState.SetBool(SESSION_KEY, true);
         try
         {
             // Step 1 — Remove invalid ad-hoc signature
@@ -85,7 +87,7 @@ public class At_WaveSpacePostInstall : AssetPostprocessor
         }
         finally
         {
-            s_isProcessing = false;
+            SessionState.EraseBool(SESSION_KEY);
         }
     }
 
