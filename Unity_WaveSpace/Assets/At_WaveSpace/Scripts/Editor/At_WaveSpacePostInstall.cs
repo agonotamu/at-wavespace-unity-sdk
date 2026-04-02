@@ -4,8 +4,10 @@
 /// @details
 /// Automatically removes the invalid ad-hoc code signature and the macOS
 /// quarantine extended attribute (com.apple.quarantine) from the native dylib
-/// after the .unitypackage is imported, then forces Unity to reimport the
-/// plugin so the cleaned dylib is loaded immediately.
+/// after the .unitypackage is imported.
+///
+/// The cleanup runs synchronously inside OnPostprocessAllAssets, so the dylib
+/// is clean before Unity attempts to load it. No forced reimport is needed.
 ///
 /// Runs automatically via AssetPostprocessor — no user action required.
 /// Safe on Windows / Linux : the entire script is skipped on non-macOS editors.
@@ -17,19 +19,14 @@ using System.Diagnostics;
 
 public class At_WaveSpacePostInstall : AssetPostprocessor
 {
-    private const string DYLIB_NAME    = "at_wavespace_engine.dylib";
-    private const string XATTR_PATH    = "/usr/bin/xattr";
-    private const string XATTR_ARGS    = "-d com.apple.quarantine";
-
-    // SessionState key — persists across assembly reloads within an Editor session.
-    // A static bool would be reset when SaveAndReimport() triggers a domain reload.
-    private const string SESSION_KEY   = "AT_WaveSpace_PostInstall_Processing";
+    private const string DYLIB_NAME = "at_wavespace_engine.dylib";
+    private const string XATTR_PATH = "/usr/bin/xattr";
+    private const string XATTR_ARGS = "-d com.apple.quarantine";
 
     // ── Debug menu ───────────────────────────────────────────────────────────
     [MenuItem("AT_WaveSpace/Debug/Test Post-Install")]
     static void TestPostInstall()
     {
-        SessionState.EraseBool(SESSION_KEY); // reset guard for manual test
         string[] fakeImport = {
             "Assets/At_WaveSpace/Plugins/MacOSX/at_wavespace_engine.dylib"
         };
@@ -47,10 +44,6 @@ public class At_WaveSpacePostInstall : AssetPostprocessor
         // Only relevant on macOS Editor
         if (Application.platform != RuntimePlatform.OSXEditor) return;
 
-        // Prevent re-entry from the SaveAndReimport() call below.
-        // SessionState survives domain reloads — a static bool would not.
-        if (SessionState.GetBool(SESSION_KEY, false)) return;
-
         // Find the dylib among the imported assets
         string dylibAssetPath = null;
         foreach (string path in importedAssets)
@@ -67,28 +60,16 @@ public class At_WaveSpacePostInstall : AssetPostprocessor
         string absPath = Path.GetFullPath(dylibAssetPath);
         if (!File.Exists(absPath)) return;
 
-        SessionState.SetBool(SESSION_KEY, true);
-        try
-        {
-            // Step 1 — Remove invalid ad-hoc signature
-            RunCommand("/usr/bin/codesign", $"--remove-signature \"{absPath}\"");
+        // Step 1 — Remove invalid ad-hoc signature
+        RunCommand("/usr/bin/codesign", $"--remove-signature \"{absPath}\"");
 
-            // Step 2 — Remove quarantine attribute
-            if (HasQuarantineAttribute(absPath))
-                RunCommand(XATTR_PATH, $"{XATTR_ARGS} \"{absPath}\"");
+        // Step 2 — Remove quarantine attribute
+        if (HasQuarantineAttribute(absPath))
+            RunCommand(XATTR_PATH, $"{XATTR_ARGS} \"{absPath}\"");
 
-            // Step 3 — Force Unity to reload the now-clean dylib
-            PluginImporter importer = AssetImporter.GetAtPath(dylibAssetPath) as PluginImporter;
-            if (importer != null)
-            {
-                importer.SetCompatibleWithEditor(true);
-                importer.SaveAndReimport();
-            }
-        }
-        finally
-        {
-            SessionState.EraseBool(SESSION_KEY);
-        }
+        // No SaveAndReimport() — the cleanup above runs synchronously before
+        // Unity loads the dylib, so it is already clean when dlopen is called.
+        // Calling SaveAndReimport() here would cause an infinite import loop.
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────
