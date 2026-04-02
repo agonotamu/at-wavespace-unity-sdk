@@ -21,6 +21,10 @@ public class At_WaveSpacePostInstall : AssetPostprocessor
     private const string XATTR_PATH = "/usr/bin/xattr";
     private const string XATTR_ARGS = "-d com.apple.quarantine";
 
+    // Guard against the infinite loop caused by SaveAndReimport()
+    // triggering OnPostprocessAllAssets again.
+    private static bool s_isProcessing = false;
+
     // ── Debug menu ───────────────────────────────────────────────────────────
     [MenuItem("AT_WaveSpace/Debug/Test Post-Install")]
     static void TestPostInstall()
@@ -42,6 +46,9 @@ public class At_WaveSpacePostInstall : AssetPostprocessor
         // Only relevant on macOS Editor
         if (Application.platform != RuntimePlatform.OSXEditor) return;
 
+        // Prevent re-entry from the SaveAndReimport() call below
+        if (s_isProcessing) return;
+
         // Find the dylib among the imported assets
         string dylibAssetPath = null;
         foreach (string path in importedAssets)
@@ -56,47 +63,34 @@ public class At_WaveSpacePostInstall : AssetPostprocessor
         if (dylibAssetPath == null) return;
 
         string absPath = Path.GetFullPath(dylibAssetPath);
-        if (!File.Exists(absPath))
+        if (!File.Exists(absPath)) return;
+
+        s_isProcessing = true;
+        try
         {
-            UnityEngine.Debug.LogWarning(
-                $"[AT WaveSpace] Post-install: dylib not found at:\n{absPath}");
-            return;
+            // Step 1 — Remove invalid ad-hoc signature
+            RunCommand("/usr/bin/codesign", $"--remove-signature \"{absPath}\"");
+
+            // Step 2 — Remove quarantine attribute
+            if (HasQuarantineAttribute(absPath))
+                RunCommand(XATTR_PATH, $"{XATTR_ARGS} \"{absPath}\"");
+
+            // Step 3 — Force Unity to reload the now-clean dylib
+            PluginImporter importer = AssetImporter.GetAtPath(dylibAssetPath) as PluginImporter;
+            if (importer != null)
+            {
+                importer.SetCompatibleWithEditor(true);
+                importer.SaveAndReimport();
+            }
         }
-
-        // Step 1 — Remove invalid ad-hoc signature (blocked by Unity Hardened Runtime)
-        RunCommand("/usr/bin/codesign",
-                   $"--remove-signature \"{absPath}\"",
-                   "code signature removed",
-                   "could not remove code signature");
-
-        // Step 2 — Remove quarantine attribute (blocked by Gatekeeper)
-        if (HasQuarantineAttribute(absPath))
-            RunCommand(XATTR_PATH,
-                       $"{XATTR_ARGS} \"{absPath}\"",
-                       "quarantine attribute removed",
-                       "could not remove quarantine attribute");
-        else
-            UnityEngine.Debug.Log("[AT WaveSpace] Post-install: no quarantine attribute — skipping.");
-
-        // Step 3 — Force Unity to reload the dylib now that it is clean
-        PluginImporter importer = AssetImporter.GetAtPath(dylibAssetPath) as PluginImporter;
-        if (importer != null)
+        finally
         {
-            importer.SetCompatibleWithEditor(true);
-            importer.SaveAndReimport();
-            UnityEngine.Debug.Log("[AT WaveSpace] Post-install: plugin reimported — ready to use.");
-        }
-        else
-        {
-            UnityEngine.Debug.LogWarning(
-                "[AT WaveSpace] Post-install: could not get PluginImporter.\n" +
-                "Right-click the dylib in the Project window and select Reimport.");
+            s_isProcessing = false;
         }
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────
-    private static void RunCommand(string exe, string args,
-                                   string successMsg, string failMsg)
+    private static void RunCommand(string exe, string args)
     {
         var psi = new ProcessStartInfo
         {
@@ -111,16 +105,9 @@ public class At_WaveSpacePostInstall : AssetPostprocessor
         using (var p = new Process { StartInfo = psi })
         {
             p.Start();
-            string stdout = p.StandardOutput.ReadToEnd();
-            string stderr = p.StandardError.ReadToEnd();
+            p.StandardOutput.ReadToEnd();
+            p.StandardError.ReadToEnd();
             p.WaitForExit();
-
-            if (p.ExitCode == 0)
-                UnityEngine.Debug.Log($"[AT WaveSpace] Post-install: {successMsg}.");
-            else
-                UnityEngine.Debug.LogWarning(
-                    $"[AT WaveSpace] Post-install: {failMsg}.\n" +
-                    (string.IsNullOrEmpty(stderr) ? "" : $"stderr: {stderr}"));
         }
     }
 
@@ -140,7 +127,6 @@ public class At_WaveSpacePostInstall : AssetPostprocessor
         {
             p.Start();
             p.WaitForExit();
-            // exit 0 = attribute present, exit 1 = absent
             return p.ExitCode == 0;
         }
     }
