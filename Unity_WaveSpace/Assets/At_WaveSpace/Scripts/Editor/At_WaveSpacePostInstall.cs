@@ -21,12 +21,31 @@ public class At_WaveSpacePostInstall : AssetPostprocessor
     private const string XATTR_PATH  = "/usr/bin/xattr";
     private const string XATTR_ARGS  = "-d com.apple.quarantine";
 
+
+    [MenuItem("AT_WaveSpace/Debug/Test Post-Install")]
+    static void TestPostInstall()
+    {
+        string[] fakeImport = {
+            "Assets/At_WaveSpace/Plugins/MacOSX/at_wavespace_engine.dylib"
+        };
+        OnPostprocessAllAssets(fakeImport,
+            new string[0], new string[0], new string[0]);
+    }
+
     static void OnPostprocessAllAssets(
         string[] importedAssets,
         string[] deletedAssets,
         string[] movedAssets,
         string[] movedFromAssetPaths)
     {
+        UnityEngine.Debug.Log(
+        $"[AT WaveSpace] PostInstall called — platform: {Application.platform}\n" +
+        $"Imported: {string.Join("\n", importedAssets)}");
+
+        foreach (string path in importedAssets)
+            UnityEngine.Debug.Log($"[AT WaveSpace] Imported asset: '{path}'");
+
+            
         // Only relevant on macOS Editor
         if (Application.platform != RuntimePlatform.OSXEditor) return;
 
@@ -82,7 +101,12 @@ public class At_WaveSpacePostInstall : AssetPostprocessor
         {
             p.Start();
             string stderr = p.StandardError.ReadToEnd();
+            string stdout = p.StandardOutput.ReadToEnd();        
             p.WaitForExit();
+
+            UnityEngine.Debug.Log(                         // ← et ce log
+                        $"[AT WaveSpace] xattr exit: {p.ExitCode}\n" +
+                        $"stdout: '{stdout}'\nstderr: '{stderr}'");
 
             if (p.ExitCode == 0)
             {
