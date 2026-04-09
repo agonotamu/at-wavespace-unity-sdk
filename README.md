@@ -22,7 +22,7 @@ It enables physically grounded 3D sound field reproduction inside Unity using a 
 The engine targets multi-speaker WFS arrays (line / circle / square or custom configurations) and supports **Binaural Virtualization** for headphone rendering.
 
 <p align="center">
-  <img src="docs/gifs/demo.gif" alt="AT WaveSpace Demo" width="720"/>
+  <img src="docs/gifs/demo.gif" alt="AT WaveSpace Demo"/>
 </p>
 
 ---
