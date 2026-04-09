@@ -107,102 +107,79 @@ The fastest way to get started is to import the prebuilt `.unitypackage` into yo
 
 ### At_MasterOutput Settings
 
-<table>
-<tr>
-<td width="45%">
-<img src="docs/images/MasterOutputEditor.png"/>
-</td>
-<td valign="top" width="55%">
-
-| Parameter | Description |
-|---|---|
-| **Output Device** | Select the audio output device. On Windows, ASIO and WASAPI devices are listed; on macOS, CoreAudio devices. |
-| **Speaker Configuration** | Preset array geometry: `Linear32`, `Linear16`, `Circle`, `2D Half-Circle`, `2D Half-Square`, or `Custom` (loaded from a `.json` file). |
-| **Spatialization Mode** | `WFS` for loudspeaker array rendering, `Simple Binaural` for direct HRTF rendering, or `Binaural Virtualization` for binaural monitoring of the WFS output. |
-| **Sample Rate / Buffer Size** | Audio device settings. Lower buffer sizes reduce latency but increase CPU load. |
-| **HRTF Folder** | Path to the folder containing HRTF impulse response files (`.txt` format), used by both binaural modes. |
-| **NFC Reference Distance** | Reference listening distance (m) for Near-Field Compensation. Defaults to `3.0 m`. |
-| **Master Gain** | Global output gain applied to all channels (linear scale). |
-
-</td>
-</tr>
-</table>
+<table><tr>
+<td width="40%" valign="top"><img src="docs/images/MasterOutputEditor.png" width="100%"/></td>
+<td valign="top"><small><table>
+<tr><th>Parameter</th><th>Description</th></tr>
+<tr><td><b>Output Device</b></td><td>Audio output device. ASIO/WASAPI on Windows; CoreAudio on macOS.</td></tr>
+<tr><td><b>Speaker Configuration</b></td><td>Array geometry preset: <code>Linear32</code>, <code>Linear16</code>, <code>Circle</code>, <code>2D Half-Circle</code>, <code>2D Half-Square</code>, or <code>Custom</code> (from <code>.json</code>).</td></tr>
+<tr><td><b>Spatialization Mode</b></td><td><code>WFS</code> for loudspeaker array rendering, <code>Simple Binaural</code> for direct HRTF rendering, or <code>Binaural Virtualization</code> for binaural monitoring of the WFS output.</td></tr>
+<tr><td><b>Sample Rate / Buffer Size</b></td><td>Audio device settings. Lower buffer sizes reduce latency but increase CPU load.</td></tr>
+<tr><td><b>HRTF Folder</b></td><td>Folder containing HRTF impulse response files (<code>.txt</code>), used by both binaural modes.</td></tr>
+<tr><td><b>NFC Reference Distance</b></td><td>Reference listening distance (m) for Near-Field Compensation. Default: <code>3.0 m</code>.</td></tr>
+<tr><td><b>Master Gain</b></td><td>Global output gain applied to all channels (linear).</td></tr>
+</table></small></td>
+</tr></table>
 
 ---
 
 ### At_Player Settings — 3D Source
 
-<table>
-<tr>
-<td width="45%">
-<img src="docs/images/AtPlayer3DEditor.png"/>
-</td>
-<td valign="top" width="55%">
-
-| Parameter | Description |
-|---|---|
-| **Audio File** | Path to the mono audio file to spatialise. |
-| **Gain** | Per-source linear gain. |
-| **Loop** | Enable looped playback. |
-| **Secondary Source Size (ε)** | Regularisation radius (m) of the point source model. Smooths the driving function near the array and avoids singularities for focused sources close to a speaker. |
-| **Distance Attenuation (α)** | Exponent for the `1/d^α` distance law applied to the source amplitude. Set to `0` to disable. |
-| **Min Distance** | Minimum distance (m) below which attenuation is clamped, preventing infinite gain as the source approaches a speaker. |
-| **Auto Binaural Switch** | Automatically switches to Simple Binaural mode when the source moves inside the loudspeaker array (focused source region). |
-
-</td>
-</tr>
-</table>
+<table><tr>
+<td width="40%" valign="top"><img src="docs/images/AtPlayer3DEditor.png" width="100%"/></td>
+<td valign="top"><small><table>
+<tr><th>Parameter</th><th>Description</th></tr>
+<tr><td><b>Audio File</b></td><td>Mono audio file to spatialise.</td></tr>
+<tr><td><b>Gain</b></td><td>Per-source linear gain.</td></tr>
+<tr><td><b>Loop</b></td><td>Enable looped playback.</td></tr>
+<tr><td><b>Secondary Source Size (ε)</b></td><td>Regularisation radius (m). Smooths the driving function near the array and avoids singularities for focused sources close to a speaker.</td></tr>
+<tr><td><b>Distance Attenuation (α)</b></td><td>Exponent for the <code>1/d^α</code> amplitude distance law. Set to <code>0</code> to disable.</td></tr>
+<tr><td><b>Min Distance</b></td><td>Distance (m) below which attenuation is clamped, preventing excessive gain.</td></tr>
+<tr><td><b>Auto Binaural Switch</b></td><td>Switches to Simple Binaural mode when the source enters the loudspeaker array (focused source region).</td></tr>
+</table></small></td>
+</tr></table>
 
 ---
 
 ### At_Player Settings — 2D Source
 
-<table>
-<tr>
-<td width="45%">
-<img src="docs/images/AtPlayer2DEditor.png"/>
-</td>
-<td valign="top" width="55%">
-
-| Parameter | Description |
-|---|---|
-| **Audio File** | Path to the multichannel audio file. The number of channels must match the number of virtual speakers in the selected configuration. |
-| **Gain** | Per-source linear gain applied to all channels. |
-| **Channel Routing** | Each channel of the audio file is routed directly to the corresponding virtual speaker output, bypassing WFS spatialisation. Useful for pre-rendered content or direct speaker feeds. |
-
-</td>
-</tr>
-</table>
+<table><tr>
+<td width="40%" valign="top"><img src="docs/images/AtPlayer2DEditor.png" width="100%"/></td>
+<td valign="top"><small><table>
+<tr><th>Parameter</th><th>Description</th></tr>
+<tr><td><b>Audio File</b></td><td>Multichannel audio file. The channel count must match the number of virtual speakers in the active configuration.</td></tr>
+<tr><td><b>Gain</b></td><td>Per-source linear gain applied to all channels.</td></tr>
+<tr><td><b>Channel Routing</b></td><td>Each channel is routed directly to the corresponding virtual speaker output, bypassing WFS spatialisation. Useful for pre-rendered content or direct speaker feeds.</td></tr>
+</table></small></td>
+</tr></table>
 
 ---
 
 ### Advanced Settings
 
-<table>
-<tr>
-<td width="45%">
-<img src="docs/images/AdvancedSettings.png"/>
-</td>
-<td valign="top" width="55%">
-
-| Parameter | Description |
-|---|---|
-| **HRTF Truncation** | Truncates HRTF impulse responses to a maximum length (e.g. 512 samples), reducing convolution CPU cost at the expense of low-frequency accuracy. |
-| **Max IR Reloads per Block** | Maximum number of HRTF impulse response reloads processed per audio block. Throttles the reload burst that occurs when many virtual speakers update simultaneously, preventing audio thread overload. |
-| **Fade Duration (ms)** | Duration of the equal-power crossfade applied during WFS ↔ Binaural mode transitions, ensuring glitch-free switching at runtime. |
-| **HRTF Hold Blocks** | Number of audio blocks for which the current HRTF is held after a position change before a new impulse response is loaded. Reduces reload frequency for fast-moving sources. |
-
-</td>
-</tr>
-</table>
+<table><tr>
+<td width="40%" valign="top"><img src="docs/images/AdvancedSettings.png" width="100%"/></td>
+<td valign="top"><small><table>
+<tr><th>Parameter</th><th>Description</th></tr>
+<tr><td><b>HRTF Truncation</b></td><td>Maximum impulse response length (e.g. 512 samples). Reduces convolution CPU cost at the expense of low-frequency accuracy.</td></tr>
+<tr><td><b>Max IR Reloads per Block</b></td><td>Throttles HRTF reload bursts. Caps the number of <code>loadImpulseResponse()</code> calls per audio block to prevent audio thread overload.</td></tr>
+<tr><td><b>Fade Duration (ms)</b></td><td>Equal-power crossfade duration for WFS ↔ Binaural mode transitions, ensuring glitch-free switching at runtime.</td></tr>
+<tr><td><b>HRTF Hold Blocks</b></td><td>Number of audio blocks to hold the current HRTF after a position change before loading a new impulse response. Reduces reload frequency for moving sources.</td></tr>
+</table></small></td>
+</tr></table>
 
 ---
 
 ### Mixer
 
-<p>
-  <img src="docs/images/Mixer.png"/>
-</p>
+<table><tr>
+<td width="40%" valign="top"><img src="docs/images/Mixer.png" width="100%"/></td>
+<td valign="top"><small>
+<p>The Mixer window provides per-source and master gain control, as well as individual <b>Play / Stop</b> buttons for each active source — useful for testing and live scene editing without leaving the Unity Editor.</p>
+<p>Each source strip displays its name, current gain (in dB), and playback state. The master strip at the bottom controls the global output level.</p>
+<p><em>Note: in the screenshot above, the master bus shows only <b>two output channels</b> because the engine is running in <b>Binaural Virtualization</b> mode, which collapses the WFS multichannel output to a stereo headphone mix. In WFS mode, all active speaker channels are shown instead.</em></p>
+</small></td>
+</tr></table>
 
 ---
 
