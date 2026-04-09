@@ -415,6 +415,14 @@ The DSP algorithms are based on research conducted by Antoine Gonot at **CNRS-LM
 
 ---
 
-*Built by [Antoine Gonot](https://github.com/agonotamu)*
+---
+
+*Developed by [Antoine Gonot](https://github.com/agonotamu)*
+
+*Maître de Conférence, [Aix-Marseille Université](https://www.univ-amu.fr/) · Member of [PRISM](https://www.prism.cnrs.fr/en/) (CNRS UMR 7061) · Visiting researcher at [LMA](https://www.lma.cnrs-mrs.fr/) (CNRS UMR 7031)*
+
+*Teaching at [Master Acoustique et Musicologie](https://formations.univ-amu.fr/fr/master/5HSM) and [Master SATIS](https://sciences.univ-amu.fr/fr/departements/satis), Aix-Marseille Université · Guest lecturer at ENS Louis Lumière*
+
+---
 
 *Parts of the code and documentation in this project were developed with the assistance of [Claude](https://claude.ai) (Anthropic PBC, claude-sonnet-4-x, 2025–2026), an AI language model used as a development and writing assistant. All scientific content, design decisions, and final outputs were reviewed and validated by the author.*
