@@ -107,126 +107,108 @@ The fastest way to get started is to import the prebuilt `.unitypackage` into yo
 
 ### At_MasterOutput Settings
 
-<table><tr>
-<td width="40%" valign="middle"><img src="docs/images/MasterOutputEditor.png" width="100%"/></td>
-<td valign="top"><small>
-<dl>
-<dt><b>Audio Device</b></dt><dd>Output device dropdown. Lists all devices with at least one output channel (ASIO/WASAPI on Windows, CoreAudio on macOS). Displays the maximum output channel count of the selected device below the dropdown.</dd>
-<dt><b>Master Gain (dB)</b></dt><dd>Global output gain, −80 to +10 dB. Slider and text field.</dd>
-<dt><b>Makeup Gain (dB)</b></dt><dd>Additional post-processing gain applied after the WFS mix, −10 to +40 dB. Useful for compensating level differences between modes.</dd>
-<dt><b>Binaural Virtualization</b></dt><dd>When enabled, the full WFS multichannel output is convolved speaker-by-speaker with HRTFs and downmixed to stereo (2 channels). Automatically enabled if the number of virtual speakers exceeds the device's physical output channel count.</dd>
-<dt><b>HRTF File</b></dt><dd>Path to the HRTF impulse response file (<code>.txt</code>), stored relative to <code>StreamingAssets/</code>. A "Load HRTF File" button opens a file browser. Visible only when Binaural Virtualization is enabled.</dd>
-<dt><b>Simple Binaural Mode (A/B Test)</b></dt><dd>Bypasses WFS synthesis and applies HRTF directly to each source for A/B listening comparisons. Only available when Binaural Virtualization is enabled.</dd>
-<dt><b>Near-Field Correction (NFC)</b></dt><dd>Applies a rigid-sphere ILD correction (DVF, Duda &amp; Martens 1998) to the binaural output. Only available when Binaural Virtualization is enabled.</dd>
-<dt><b>HRTF Distance (m)</b></dt><dd>Measurement distance of the loaded BRIR set (typically 1.0 m). Used by NFC to compute the distance-dependent correction.</dd>
-<dt><b>Buffer Size</b></dt><dd>Audio buffer size: 64, 128, 256, 512, 1024, or 2048 samples. Lower values reduce latency but increase CPU load.</dd>
-<dt><b>Sampling Rate</b></dt><dd>44100 or 48000 Hz.</dd>
-<dt><b>Speaker Configuration</b></dt><dd>Array topology: <code>1D</code>, <code>2D SQUARE</code>, <code>2D HALF-SQUARE</code>, <code>2D CIRCLE</code>, <code>2D HALF-CIRCLE</code>, or <code>Custom</code> (loaded from a <code>.spatconfig</code> file). After selecting a standard topology, the number of virtual speakers and rig size can be set below.</dd>
-<dt><b>Num. Virtual Speakers</b></dt><dd>Number of virtual speakers for standard configurations (max 1024). If this exceeds the device's physical output channel count and Binaural Virtualization is off, the engine automatically switches to Binaural Virtualization.</dd>
-<dt><b>Speaker Rig Size (m)</b></dt><dd>Total span of the speaker array (distance from first to last speaker), 0.1–80 m. For <code>Custom</code> configs, this is read from the <code>.spatconfig</code> file.</dd>
-<dt><b>Max Distance / Delay (m)</b></dt><dd>Maximum source-to-speaker distance (10–100 m) used to scale per-speaker delays. Set this to the largest expected propagation distance in your setup.</dd>
-</dl>
-</small></td>
-</tr></table>
+<p align="center"><img src="docs/images/MasterOutputEditor.png" width="580"/></p>
+
+| Parameter | Description |
+|---|---|
+| **Audio Device** | Output device dropdown. Lists all devices with at least one output channel (ASIO/WASAPI on Windows, CoreAudio on macOS). The maximum channel count of the selected device is displayed below the dropdown. |
+| **Master Gain (dB)** | Global output gain, −80 to +10 dB. |
+| **Makeup Gain (dB)** | Additional gain applied after the WFS mix, −10 to +40 dB. Useful for compensating level differences between rendering modes. |
+| **Binaural Virtualization** | When enabled, the full WFS multichannel output is convolved speaker-by-speaker with HRTFs and downmixed to stereo. Automatically enabled if the number of virtual speakers exceeds the device's physical output channel count. |
+| **HRTF File** | Path to the HRTF impulse response file (`.txt`), stored relative to `StreamingAssets/`. A **Load HRTF File** button opens a file browser. Visible only when Binaural Virtualization is enabled. |
+| **Simple Binaural Mode (A/B Test)** | Bypasses WFS synthesis and applies HRTF directly to each source. Useful for A/B perceptual comparisons. Only available when Binaural Virtualization is enabled. |
+| **Near-Field Correction (NFC)** | Applies a rigid-sphere ILD correction (DVF, Duda & Martens 1998) to the binaural output. Only available when Binaural Virtualization is enabled. |
+| **HRTF Distance (m)** | Measurement distance of the loaded BRIR set (typically 1.0 m). Used by NFC to compute the distance-dependent correction. |
+| **Buffer Size** | Audio buffer size: 64, 128, 256, 512, 1024, or 2048 samples. Lower values reduce latency but increase CPU load. |
+| **Sampling Rate** | 44100 or 48000 Hz. |
+| **Speaker Configuration** | Array topology: `1D`, `2D SQUARE`, `2D HALF-SQUARE`, `2D CIRCLE`, `2D HALF-CIRCLE`, or `Custom` (loaded from a `.spatconfig` file). |
+| **Num. Virtual Speakers** | Number of virtual speakers for standard topologies (max 1024). If this exceeds the device's physical output channel count and Binaural Virtualization is off, the engine automatically enables it. |
+| **Speaker Rig Size (m)** | Total span of the array from first to last speaker, 0.1–80 m. Read automatically from `.spatconfig` for Custom configurations. |
+| **Max Distance / Delay (m)** | Maximum source-to-speaker distance (10–100 m) used to scale per-speaker delays. |
 
 ---
 
 ### At_Player Settings — 3D Source
 
-<table><tr>
-<td width="40%" valign="middle"><img src="docs/images/AtPlayer3DEditor.png" width="100%"/></td>
-<td valign="top"><small>
-<dl>
-<dt><b>Audio File</b></dt><dd>"Open" button browses to <code>StreamingAssets/Audio/</code> and accepts <code>.wav</code>, <code>.mp3</code>, or <code>.ogg</code> files. The channel count is read from the file's metadata automatically. The path is stored relative to <code>StreamingAssets/</code> for cross-platform portability.</dd>
-<dt><b>Gain (dB)</b></dt><dd>Per-source gain, −80 to +10 dB. Slider and text field.</dd>
-<dt><b>Spatialization Mode</b></dt><dd>Toggle between <b>3D (WFS)</b> — full wave field synthesis spatialisation — and <b>2D (Direct)</b> — multichannel direct routing to virtual speakers.</dd>
-<dt><b>Play On Awake</b></dt><dd>Start playback automatically when the scene starts.</dd>
-<dt><b>Loop</b></dt><dd>Loop the audio file continuously.</dd>
-<dt><b>Playback Speed</b></dt><dd>Playback rate multiplier, 0.1× to 4.0×.</dd>
-<dt><b>Minimum Distance (m)</b></dt><dd>Distance below which amplitude attenuation is clamped (0.1–50 m). Prevents the gain from diverging as the source approaches a virtual speaker.</dd>
-<dt><b>Attenuation</b></dt><dd>Exponent α of the <code>1/d^α</code> distance law (0–2). Set to <code>0</code> to disable distance attenuation entirely.</dd>
-</dl>
-</small></td>
-</tr></table>
+<p align="center"><img src="docs/images/AtPlayer3DEditor.png" width="580"/></p>
+
+| Parameter | Description |
+|---|---|
+| **Audio File** | **Open** button browses to `StreamingAssets/Audio/` and accepts `.wav`, `.mp3`, or `.ogg`. The channel count is read from the file metadata automatically. The path is stored relative to `StreamingAssets/` for cross-platform portability. |
+| **Gain (dB)** | Per-source gain, −80 to +10 dB. |
+| **Spatialization Mode** | Toggle between **3D (WFS)** — full wave field synthesis spatialisation — and **2D (Direct)** — multichannel direct routing to virtual speakers. |
+| **Play On Awake** | Start playback automatically when the scene starts. |
+| **Loop** | Loop the audio file continuously. |
+| **Playback Speed** | Playback rate multiplier, 0.1× to 4.0×. |
+| **Minimum Distance (m)** | Distance below which amplitude attenuation is clamped (0.1–50 m). Prevents the gain from diverging as the source approaches a virtual speaker. |
+| **Attenuation** | Exponent α of the `1/d^α` distance law (0–2). Set to `0` to disable distance attenuation entirely. |
 
 ---
 
 ### At_Player Settings — 2D Source
 
-<table><tr>
-<td width="40%" valign="middle"><img src="docs/images/AtPlayer2DEditor.png" width="100%"/></td>
-<td valign="top"><small>
-<dl>
-<dt><b>Audio File</b></dt><dd>"Open" button browses to <code>StreamingAssets/Audio/</code>. The file's channel count is read from metadata and used to determine how many virtual speaker outputs are fed.</dd>
-<dt><b>Gain (dB)</b></dt><dd>Per-source gain, −80 to +10 dB. Slider and text field.</dd>
-<dt><b>Spatialization Mode</b></dt><dd>Set to <b>2D (Direct)</b>: each channel of the audio file is routed directly to the corresponding virtual speaker output, bypassing WFS spatialisation. Useful for pre-rendered content or direct speaker feeds.</dd>
-<dt><b>Play On Awake</b></dt><dd>Start playback automatically when the scene starts.</dd>
-<dt><b>Loop</b></dt><dd>Loop the audio file continuously.</dd>
-<dt><b>Playback Speed</b></dt><dd>Playback rate multiplier, 0.1× to 4.0×.</dd>
-</dl>
-</small></td>
-</tr></table>
+<p align="center"><img src="docs/images/AtPlayer2DEditor.png" width="580"/></p>
+
+| Parameter | Description |
+|---|---|
+| **Audio File** | **Open** button browses to `StreamingAssets/Audio/`. The file's channel count is read from metadata and determines how many virtual speaker outputs are fed. |
+| **Gain (dB)** | Per-source gain, −80 to +10 dB. |
+| **Spatialization Mode** | Set to **2D (Direct)**: each channel of the audio file is routed directly to the corresponding virtual speaker output, bypassing WFS spatialisation. |
+| **Play On Awake** | Start playback automatically when the scene starts. |
+| **Loop** | Loop the audio file continuously. |
+| **Playback Speed** | Playback rate multiplier, 0.1× to 4.0×. |
 
 ---
 
 ### Advanced Settings
 
-<table><tr>
-<td width="40%" valign="middle"><img src="docs/images/AdvancedSettings.png" width="100%"/></td>
-<td valign="top"><small>
-<p>Accessible via <b>AT_WaveSpace → Advanced Settings…</b>. Groups engine-wide and per-player parameters that apply globally to the scene.</p>
-<p><b>MASTER</b></p>
-<dl>
-<dt><b>Simple Binaural Mode (A/B Test)</b></dt><dd>Bypasses WFS synthesis and applies HRTF directly to each source. Used for A/B perceptual comparisons. Only available when Binaural Virtualization is enabled in <code>At_MasterOutput</code>.</dd>
-<dt><b>Near-Field Correction (NFC)</b></dt><dd>Applies a rigid-sphere ILD correction (DVF, Duda &amp; Martens 1998) to the binaural output. Only available when Binaural Virtualization is enabled.</dd>
-<dt><b>HRTF Distance (m)</b></dt><dd>Measurement distance of the loaded BRIR set (typically 1.0 m). Source distance and azimuth are derived automatically from scene transforms.</dd>
-<dt><b>Add / Remove Wavefront Display</b></dt><dd>Instantiates or removes the <code>WavefrontDisplay</code> prefab in the scene. The display plane is automatically scaled to match the Speaker Rig Size.</dd>
-</dl>
-<p><b>PLAYERS</b> <em>(applied to all players)</em></p>
-<dl>
-<dt><b>Enable WFS Output Mask</b></dt><dd>Activates only the speakers on the correct side of the perpendicular to the listener-source line passing through the virtual source.</dd>
-<dt><b>Pre-filtering √(jω)</b></dt><dd>Applies a half-derivative IIR prefilter to correct the +3 dB/oct amplitude error inherent in 2.5D WFS synthesis.</dd>
-<dt><b>WFS Gain cos(φ)/√r</b></dt><dd>Applies per-speaker 2.5D amplitude weighting. Disable for delay-only WFS rendering.</dd>
-<dt><b>Active-speakers min/max (focused sources)</b></dt><dd>Restricts the focused-source time-reversal delay reference to active speakers only. Prevents left/right inversion when the WFS Output Mask is active.</dd>
-<dt><b>Source Size ε (m)</b></dt><dd>Secondary source regularisation radius shared by the audio engine and the wavefront shader. P1: replaces r in the amplitude term with r_eff = √(r²+ε²) to avoid divergence near the array plane. P2: replaces the hard speaker-activation gate with a C¹ raised-cosine taper. Set to 0 for ideal point source behaviour.</dd>
-</dl>
-</small></td>
-</tr></table>
+> Accessible via **AT_WaveSpace → Advanced Settings…**
+
+<p align="center"><img src="docs/images/AdvancedSettings.png" width="580"/></p>
+
+**MASTER** — the following parameters require Binaural Virtualization to be enabled in `At_MasterOutput`.
+
+| Parameter | Description |
+|---|---|
+| **Simple Binaural Mode (A/B Test)** | Bypasses WFS synthesis and applies HRTF directly to each source for A/B perceptual comparisons. |
+| **Near-Field Correction (NFC)** | Applies a rigid-sphere ILD correction (DVF, Duda & Martens 1998) to the binaural output. |
+| **HRTF Distance (m)** | Measurement distance of the loaded BRIR set (typically 1.0 m). Source distance and azimuth are derived automatically from scene transforms. |
+| **Add / Remove Wavefront Display** | Instantiates or removes the `WavefrontDisplay` prefab in the scene. The display plane is automatically scaled to match the Speaker Rig Size. |
+
+**PLAYERS** — applied globally to all players in the scene.
+
+| Parameter | Description |
+|---|---|
+| **Enable WFS Output Mask** | Activates only the speakers on the correct side of the perpendicular to the listener-source line passing through the virtual source. |
+| **Pre-filtering √(jω)** | Applies a half-derivative IIR prefilter to correct the +3 dB/oct amplitude error inherent in 2.5D WFS synthesis. |
+| **WFS Gain cos(φ)/√r** | Applies per-speaker 2.5D amplitude weighting. Disable for delay-only WFS rendering. |
+| **Active-speakers min/max (focused sources)** | Restricts the focused-source time-reversal delay reference to active speakers only. Prevents left/right inversion when the WFS Output Mask is active. |
+| **Source Size ε (m)** | Secondary source regularisation radius, shared by the audio engine and the wavefront shader. **P1** — amplitude: uses `r_eff = √(r²+ε²)` to prevent divergence near the array plane. **P2** — mask taper: replaces the hard speaker-activation gate with a C¹ raised-cosine ramp. Set to `0` for ideal point source behaviour. |
 
 ---
 
 ### Mixer
 
-<table><tr>
-<td width="40%" valign="top"><img src="docs/images/Mixer.png" width="100%"/></td>
-<td valign="top"><small>
-<p>The Mixer window provides per-source and master gain control, as well as individual <b>Play / Stop</b> buttons for each active source — useful for testing and live scene editing without leaving the Unity Editor.</p>
-<p>Each source strip displays its name, current gain (in dB), and playback state. The master strip at the bottom controls the global output level.</p>
-<p><em>Note: in the screenshot above, the master bus shows only <b>two output channels</b> because the engine is running in <b>Binaural Virtualization</b> mode, which collapses the WFS multichannel output to a stereo headphone mix. In WFS mode, all active speaker channels are shown instead.</em></p>
-</small></td>
-</tr></table>
+> Accessible via **AT_WaveSpace → Mixer**
+
+<p align="center"><img src="docs/images/Mixer.png" width="580"/></p>
+
+The Mixer window provides per-source and master gain control, as well as individual **Play / Stop** buttons for each active source — useful for testing and live scene editing without leaving the Unity Editor. Each source strip displays its name, current gain (in dB), and playback state.
+
+> **Note:** the master bus shows only **two output channels** in the screenshot above because the engine is running in **Binaural Virtualization** mode, which collapses the WFS multichannel output to a stereo headphone mix. In WFS mode, all active speaker channels are shown.
 
 ---
 
 ### Wavefront Display Settings
 
-<table>
-<tr>
-<td width="45%">
-<img src="docs/images/WavefrontDisplayEditor.png"/>
-</td>
-<td valign="top" width="55%">
+<p align="center"><img src="docs/images/WavefrontDisplayEditor.png" width="580"/></p>
 
 | Parameter | Description |
 |---|---|
-| **RenderTexture Resolution** | Resolution (in pixels) of the render texture on which the wavefront is drawn. Higher values produce a sharper result but increase GPU memory usage. |
-| **Wave Frequency** | Frequency (Hz) of the simulated pure tone whose wavefront is displayed. Lower frequencies show large, slow wavefronts; higher frequencies reveal spatial aliasing artefacts. |
+| **RenderTexture Resolution** | Resolution in pixels of the render texture on which the wavefront is drawn. Higher values produce a sharper result but increase GPU memory usage. |
+| **Wave Frequency** | Frequency (Hz) of the simulated pure tone whose wavefront is displayed. Lower frequencies produce smooth, wide wavefronts; higher frequencies reveal spatial aliasing artefacts above the array's aliasing limit (~920 Hz for a 32-speaker array at 18.5 cm spacing). |
 
-</td>
-</tr>
-</table>
-
-The three renders below show the same WFS source at 250 Hz, 1 kHz, and 2 kHz. The 2 kHz image illustrates the onset of spatial aliasing above the array's aliasing frequency (~920 Hz for a 32-speaker array at 18.5 cm spacing).
+The three renders below show the same WFS source at 250 Hz, 1 kHz, and 2 kHz.
 
 <table>
 <tr>
