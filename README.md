@@ -19,7 +19,7 @@
 <td width="45%" valign="top"><img src="docs/gifs/demo.gif" alt="AT WaveSpace Demo" width="100%"/></td>
 <td valign="middle">
 
-**AT WaveSpace** is a native spatial audio engine based on **Wave Field Synthesis (WFS)**, developed by Antoine Gonot at the [CNRS LMA](https://www.lma.cnrs-mrs.fr/) laboratory in Marseille, France.
+**AT WaveSpace** is a native spatial audio engine based on **Wave Field Synthesis (WFS)**, developed by Antoine Gonot at the [CNRS-LMA](https://www.lma.cnrs-mrs.fr/) laboratory in Marseille, France.
 
 It enables physically grounded 3D sound field reproduction inside Unity using a high-performance **C++ / JUCE DSP core**, exposed to Unity through a pure **C API** (`extern "C"`) and a **C# wrapper layer**.
 
@@ -403,7 +403,7 @@ All `.sofa` files found recursively are converted in place.
 
 This project is released under the [MIT License](LICENSE).
 
-The DSP algorithms are based on research conducted at **CNRS LMA** (Laboratoire de Mécanique et d'Acoustique), Marseille.
+The DSP algorithms are based on research conducted by Antoine Gonot at **CNRS-LMA** (Laboratoire de Mécanique et d'Acoustique), Marseille.
 
 ---
 
@@ -416,3 +416,5 @@ The DSP algorithms are based on research conducted at **CNRS LMA** (Laboratoire 
 ---
 
 *Built by [Antoine Gonot](https://github.com/agonotamu)*
+
+*Parts of the code and documentation in this project were developed with the assistance of [Claude](https://claude.ai) (Anthropic PBC, claude-sonnet-4-x, 2025–2026), an AI language model used as a development and writing assistant. All scientific content, design decisions, and final outputs were reviewed and validated by the author.*
