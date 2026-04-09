@@ -32,7 +32,7 @@ The engine targets multi-speaker WFS arrays (line/circle/square or custom config
 | Feature | Description |
 |---|---|
 | **Wave Field Synthesis** | Physically-based spatial rendering over loudspeaker arrays using standart 2.5D driving function, with pre-filter, per-speaker delay and gain|
-| **Binaural virtualization** | Monitoring of the loudspeakers array over headphone using per-speaker HRTF convolution. |
+| **Binaural Virtualization** | Monitoring of the loudspeakers array over headphone using per-speaker HRTF convolution. |
 | **Simple Binaural mode** | HRTF-based headphone rendering, switchable at runtime |
 | **Real-time DSP** | High-performance C++ / JUCE audio engine, running on a dedicated thread |
 | **Dynamic source positioning** | Continuous 3D source position updates from Unity |
@@ -45,27 +45,11 @@ The engine targets multi-speaker WFS arrays (line/circle/square or custom config
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                    Unity Project                        │
-│                                                         │
-│   At_MasterOutput.cs      At_Player.cs                  │
-│        │                       │                        │
-│        └──────────┬────────────┘                        │
-│                   │  C# API (PluginInterface.cs)        │
-└───────────────────┼─────────────────────────────────────┘
-                    │  extern "C" / P/Invoke
-┌───────────────────┼─────────────────────────────────────┐
-│                   │  Native DSP Core (C++ / JUCE)       │
-│                   │                                     │
-│   AT_SpatializationEngine                               │
-│        ├── AT_Spatializer  (WFS rendering)              │
-│        ├── BinauralSimpleSpatializer  (HRTF mode)       │
-│        └── AT_SpatPlayer   (audio transport)            │
-│                                                         │
-│   AudioDeviceManager  (ASIO / WASAPI / CoreAudio)       │
-└─────────────────────────────────────────────────────────┘
-```
+
+<p align="center">
+  <img src="docs/images/WaveSpaceArchiLib.png" alt="AT_WaveSpace Architecture" width="720"/>
+</p>
+
 
 The C++ core compiles to a **dynamic library** (`.dll` / `.dylib`) that Unity loads via P/Invoke. All DSP processing, speaker rendering, and device management happen in the native layer. Unity provides scene geometry and playback control.
 
