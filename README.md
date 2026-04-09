@@ -72,6 +72,10 @@ at-wavespace-unity-sdk/
 │       └── CMakePresets.json         # Build presets for CMake
 ├── UnityPackage/
 │   └── At_WaveSpace_1.0.unitypackage # Ready-to-import Unity package
+├── Sofa_Conv/
+│   ├── convert_normalize_sofa.py     # SOFA → .txt HRTF converter
+│   ├── QU_KEMAR_anechoic_3m.sofa     # Example SOFA input (QU KEMAR, TU Berlin, 3 m)
+│   └── QU_KEMAR_anechoic_3m.txt      # Corresponding .txt output
 ├── docs/
 │   ├── images/
 │   └── gifs/
@@ -313,6 +317,70 @@ A standalone **console test application** is also included for validating the DS
 Open `_at_wavespace_engine/_at_wavespace_consoleApp.jucer` in Projucer (or use the corresponding CMake target) and follow the same build steps as above. The console app initialises the `AudioDeviceManager` directly and is useful for offline corpus generation, calibration, and audio routing diagnostics.
 
 > **Note (macOS / Windows):** Console apps built with JUCE require a `ScopedJuceInitialiser_GUI` to be instantiated first in `main()`, even when running headlessly.
+
+---
+
+## HRTF Format — SOFA to .txt Conversion
+
+AT WaveSpace reads HRTF impulse responses from plain-text `.txt` files rather than directly from the SOFA standard. This is a deliberate design choice: reading SOFA natively in C++ requires linking against [libmysofa](https://github.com/hoene/libmysofa) or the [netCDF-C](https://github.com/Unidata/netcdf-c) library, both of which add non-JUCE build dependencies (CMake find scripts, platform-specific binaries, or submodules). Keeping the engine's only C++ dependency as JUCE simplifies the build on all platforms.
+
+The conversion from any SOFA file to the `.txt` format is handled once, offline, by the Python script in [`Sofa_Conv/`](Sofa_Conv/).
+
+### .txt Format
+
+```
+HEADER <sample_rate> <ir_length>
+<az> <el> <dist> <ir_left[0]> ... <ir_left[N-1]> <ir_right[0]> ... <ir_right[N-1]>
+...
+```
+
+One line per measurement position. Azimuth and elevation are in degrees (SOFA spherical convention), distance in metres. Left and right IRs follow on the same line as space-separated floats.
+
+### Example Files
+
+The [`Sofa_Conv/`](Sofa_Conv/) folder contains a ready-to-use example:
+
+| File | Description |
+|---|---|
+| [`convert_normalize_sofa.py`](Sofa_Conv/convert_normalize_sofa.py) | Conversion script |
+| [`QU_KEMAR_anechoic_3m.sofa`](Sofa_Conv/QU_KEMAR_anechoic_3m.sofa) | Source SOFA file — QU KEMAR database, 3 m, horizontal plane |
+| [`QU_KEMAR_anechoic_3m.txt`](Sofa_Conv/QU_KEMAR_anechoic_3m.txt) | Converted output, ready to load in AT WaveSpace |
+
+The SOFA file is from the **QU KEMAR** dataset measured at TU Berlin: Wierstorf, H., Geier, M., Raake, A. & Spors, S., *A Free Database of Head Related Impulse Response Measurements in the Horizontal Plane with Multiple Distances*, AES 130th Convention, 2011. Available in SOFA format on [Zenodo](https://doi.org/10.5281/zenodo.55418) (DOI: 10.5281/zenodo.55418).
+
+### Using `convert_normalize_sofa.py`
+
+**Prerequisites**
+
+```bash
+pip install numpy
+pip install sofar          # recommended SOFA backend
+# or: pip install pysofaconventions
+# or: pip install netCDF4
+```
+
+**Single file**
+
+```bash
+python3 Sofa_Conv/convert_normalize_sofa.py my_hrtf.sofa my_hrtf.txt
+```
+
+If the output path is omitted, the `.txt` file is written next to the input with the same stem.
+
+**Batch — entire folder**
+
+```bash
+python3 Sofa_Conv/convert_normalize_sofa.py /path/to/sofa/folder/
+```
+
+All `.sofa` files found recursively are converted in place.
+
+**What the script does**
+
+- Loads the SOFA file using the first available backend (`sofar`, `pysofaconventions`, or `netCDF4`).
+- Detects and corrects L/R channel swaps automatically by checking peak energy at ±90° lateral positions.
+- Peak-normalises both IRs to 0.95 if the maximum exceeds that threshold.
+- Writes the `.txt` file in the format expected by the engine.
 
 ---
 
