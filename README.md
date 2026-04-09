@@ -15,7 +15,7 @@
 
 ## Overview
 
-**AT WaveSpace** is a native spatial audio engine based on **Wave Field Synthesis (WFS)**, developed in collaboration with research from [CNRS LMA](https://www.lma.cnrs-mrs.fr/).
+**AT WaveSpace** is a native spatial audio engine based on **Wave Field Synthesis (WFS)**, developped by Antoine Gonot 	at the [CNRS LMA](https://www.lma.cnrs-mrs.fr/) laboratory, in Marseille, France.
 
 It enables physically grounded 3D sound field reproduction inside Unity using a high-performance **C++ / JUCE DSP core**, exposed to Unity through a pure **C API** (`extern "C"`) and a **C# wrapper layer**.
 
@@ -31,17 +31,16 @@ The engine targets multi-speaker WFS arrays (linear or custom configurations) an
 
 | Feature | Description |
 |---|---|
-| **Wave Field Synthesis** | Physically-based spatial rendering over loudspeaker arrays |
+| **Wave Field Synthesis** | Physically-based spatial rendering over loudspeaker arrays using standart 2.5D driving function, with pre-filter, per-speaker delay and gain|
+| **Binaural virtualization** | Monitoring of the loudspeakers array over headphone using per-speaker HRTF convolution. |
 | **Simple Binaural mode** | HRTF-based headphone rendering, switchable at runtime |
 | **Real-time DSP** | High-performance C++ / JUCE audio engine, running on a dedicated thread |
 | **Dynamic source positioning** | Continuous 3D source position updates from Unity |
-| **Multi-channel output** | Supports up to 1024 virtual speakers; tested with 32-channel linear arrays |
+| **Multi-channel output** | Supports up to 1024 virtual speakers |
 | **Native Unity integration** | Plug-and-play C# API via `At_Player` and `At_MasterOutput` components |
-| **Custom speaker configurations** | Load any array geometry from `SpatialConfiguration.json` |
+| **Custom speaker configurations** | Save and Load any array loudspeaker geometry from `.json` file |
 | **Cross-platform** | Windows (ASIO / WASAPI) and macOS (CoreAudio) |
-| **Android / Oculus Quest 2** | Oboe backend support included |
-| **Research-backed** | Developed as part of WFS perceptual evaluation work at CNRS LMA |
-
+	
 ---
 
 ## Architecture
