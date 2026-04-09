@@ -109,16 +109,17 @@ The fastest way to get started is to import the prebuilt `.unitypackage` into yo
 
 <table><tr>
 <td width="40%" valign="top"><img src="docs/images/MasterOutputEditor.png" width="100%"/></td>
-<td valign="top"><small><table>
-<tr><th>Parameter</th><th>Description</th></tr>
-<tr><td><b>Output Device</b></td><td>Audio output device. ASIO/WASAPI on Windows; CoreAudio on macOS.</td></tr>
-<tr><td><b>Speaker Configuration</b></td><td>Array geometry preset: <code>Linear32</code>, <code>Linear16</code>, <code>Circle</code>, <code>2D Half-Circle</code>, <code>2D Half-Square</code>, or <code>Custom</code> (from <code>.json</code>).</td></tr>
-<tr><td><b>Spatialization Mode</b></td><td><code>WFS</code> for loudspeaker array rendering, <code>Simple Binaural</code> for direct HRTF rendering, or <code>Binaural Virtualization</code> for binaural monitoring of the WFS output.</td></tr>
-<tr><td><b>Sample Rate / Buffer Size</b></td><td>Audio device settings. Lower buffer sizes reduce latency but increase CPU load.</td></tr>
-<tr><td><b>HRTF Folder</b></td><td>Folder containing HRTF impulse response files (<code>.txt</code>), used by both binaural modes.</td></tr>
-<tr><td><b>NFC Reference Distance</b></td><td>Reference listening distance (m) for Near-Field Compensation. Default: <code>3.0 m</code>.</td></tr>
-<tr><td><b>Master Gain</b></td><td>Global output gain applied to all channels (linear).</td></tr>
-</table></small></td>
+<td valign="top"><small>
+<dl>
+<dt><b>Output Device</b></dt><dd>Audio output device. ASIO/WASAPI on Windows; CoreAudio on macOS.</dd>
+<dt><b>Speaker Configuration</b></dt><dd>Array geometry preset: <code>Linear32</code>, <code>Linear16</code>, <code>Circle</code>, <code>2D Half-Circle</code>, <code>2D Half-Square</code>, or <code>Custom</code> (loaded from a <code>.json</code> file).</dd>
+<dt><b>Spatialization Mode</b></dt><dd><code>WFS</code> for loudspeaker array rendering, <code>Simple Binaural</code> for direct HRTF rendering, or <code>Binaural Virtualization</code> for binaural monitoring of the full WFS output.</dd>
+<dt><b>Sample Rate / Buffer Size</b></dt><dd>Audio device settings. Lower buffer sizes reduce latency but increase CPU load.</dd>
+<dt><b>HRTF Folder</b></dt><dd>Folder containing HRTF impulse response files (<code>.txt</code>), used by both binaural modes.</dd>
+<dt><b>NFC Reference Distance</b></dt><dd>Reference listening distance (m) for Near-Field Compensation. Default: <code>3.0 m</code>.</dd>
+<dt><b>Master Gain</b></dt><dd>Global output gain applied to all channels (linear).</dd>
+</dl>
+</small></td>
 </tr></table>
 
 ---
@@ -127,16 +128,17 @@ The fastest way to get started is to import the prebuilt `.unitypackage` into yo
 
 <table><tr>
 <td width="40%" valign="top"><img src="docs/images/AtPlayer3DEditor.png" width="100%"/></td>
-<td valign="top"><small><table>
-<tr><th>Parameter</th><th>Description</th></tr>
-<tr><td><b>Audio File</b></td><td>Mono audio file to spatialise.</td></tr>
-<tr><td><b>Gain</b></td><td>Per-source linear gain.</td></tr>
-<tr><td><b>Loop</b></td><td>Enable looped playback.</td></tr>
-<tr><td><b>Secondary Source Size (ε)</b></td><td>Regularisation radius (m). Smooths the driving function near the array and avoids singularities for focused sources close to a speaker.</td></tr>
-<tr><td><b>Distance Attenuation (α)</b></td><td>Exponent for the <code>1/d^α</code> amplitude distance law. Set to <code>0</code> to disable.</td></tr>
-<tr><td><b>Min Distance</b></td><td>Distance (m) below which attenuation is clamped, preventing excessive gain.</td></tr>
-<tr><td><b>Auto Binaural Switch</b></td><td>Switches to Simple Binaural mode when the source enters the loudspeaker array (focused source region).</td></tr>
-</table></small></td>
+<td valign="top"><small>
+<dl>
+<dt><b>Audio File</b></dt><dd>Mono audio file to spatialise.</dd>
+<dt><b>Gain</b></dt><dd>Per-source linear gain.</dd>
+<dt><b>Loop</b></dt><dd>Enable looped playback.</dd>
+<dt><b>Secondary Source Size (ε)</b></dt><dd>Regularisation radius (m). Smooths the driving function near the array and avoids singularities for focused sources close to a speaker.</dd>
+<dt><b>Distance Attenuation (α)</b></dt><dd>Exponent for the <code>1/d^α</code> amplitude distance law. Set to <code>0</code> to disable.</dd>
+<dt><b>Min Distance</b></dt><dd>Distance (m) below which attenuation is clamped, preventing excessive gain.</dd>
+<dt><b>Auto Binaural Switch</b></dt><dd>Switches to Simple Binaural mode when the source enters the loudspeaker array (focused source region).</dd>
+</dl>
+</small></td>
 </tr></table>
 
 ---
@@ -145,12 +147,13 @@ The fastest way to get started is to import the prebuilt `.unitypackage` into yo
 
 <table><tr>
 <td width="40%" valign="top"><img src="docs/images/AtPlayer2DEditor.png" width="100%"/></td>
-<td valign="top"><small><table>
-<tr><th>Parameter</th><th>Description</th></tr>
-<tr><td><b>Audio File</b></td><td>Multichannel audio file. The channel count must match the number of virtual speakers in the active configuration.</td></tr>
-<tr><td><b>Gain</b></td><td>Per-source linear gain applied to all channels.</td></tr>
-<tr><td><b>Channel Routing</b></td><td>Each channel is routed directly to the corresponding virtual speaker output, bypassing WFS spatialisation. Useful for pre-rendered content or direct speaker feeds.</td></tr>
-</table></small></td>
+<td valign="top"><small>
+<dl>
+<dt><b>Audio File</b></dt><dd>Multichannel audio file. The channel count must match the number of virtual speakers in the active configuration.</dd>
+<dt><b>Gain</b></dt><dd>Per-source linear gain applied to all channels.</dd>
+<dt><b>Channel Routing</b></dt><dd>Each channel is routed directly to the corresponding virtual speaker output, bypassing WFS spatialisation. Useful for pre-rendered content or direct speaker feeds.</dd>
+</dl>
+</small></td>
 </tr></table>
 
 ---
@@ -159,13 +162,14 @@ The fastest way to get started is to import the prebuilt `.unitypackage` into yo
 
 <table><tr>
 <td width="40%" valign="top"><img src="docs/images/AdvancedSettings.png" width="100%"/></td>
-<td valign="top"><small><table>
-<tr><th>Parameter</th><th>Description</th></tr>
-<tr><td><b>HRTF Truncation</b></td><td>Maximum impulse response length (e.g. 512 samples). Reduces convolution CPU cost at the expense of low-frequency accuracy.</td></tr>
-<tr><td><b>Max IR Reloads per Block</b></td><td>Throttles HRTF reload bursts. Caps the number of <code>loadImpulseResponse()</code> calls per audio block to prevent audio thread overload.</td></tr>
-<tr><td><b>Fade Duration (ms)</b></td><td>Equal-power crossfade duration for WFS ↔ Binaural mode transitions, ensuring glitch-free switching at runtime.</td></tr>
-<tr><td><b>HRTF Hold Blocks</b></td><td>Number of audio blocks to hold the current HRTF after a position change before loading a new impulse response. Reduces reload frequency for moving sources.</td></tr>
-</table></small></td>
+<td valign="top"><small>
+<dl>
+<dt><b>HRTF Truncation</b></dt><dd>Maximum impulse response length (e.g. 512 samples). Reduces convolution CPU cost at the expense of low-frequency accuracy.</dd>
+<dt><b>Max IR Reloads per Block</b></dt><dd>Throttles HRTF reload bursts. Caps the number of <code>loadImpulseResponse()</code> calls per audio block to prevent audio thread overload.</dd>
+<dt><b>Fade Duration (ms)</b></dt><dd>Equal-power crossfade duration for WFS ↔ Binaural mode transitions, ensuring glitch-free switching at runtime.</dd>
+<dt><b>HRTF Hold Blocks</b></dt><dd>Number of audio blocks to hold the current HRTF after a position change before loading a new impulse response. Reduces reload frequency for moving sources.</dd>
+</dl>
+</small></td>
 </tr></table>
 
 ---
