@@ -13,7 +13,7 @@
 
 ---
 
-## ✨ Overview
+## Overview
 
 **AT WaveSpace** is a native spatial audio engine based on **Wave Field Synthesis (WFS)**, developed in collaboration with research from [CNRS LMA](https://www.lma.cnrs-mrs.fr/).
 
@@ -27,30 +27,30 @@ The engine targets multi-speaker WFS arrays (linear or custom configurations) an
 
 ---
 
-## 🚀 Features
+## Features
 
 | Feature | Description |
 |---|---|
-| 🌍 **Wave Field Synthesis** | Physically-based spatial rendering over loudspeaker arrays |
-| 🎧 **Simple Binaural mode** | HRTF-based headphone rendering, switchable at runtime |
-| ⚡ **Real-time DSP** | High-performance C++ / JUCE audio engine, running on a dedicated thread |
-| 🎚 **Dynamic source positioning** | Continuous 3D source position updates from Unity |
-| 🔊 **Multi-channel output** | Supports up to 1024 virtual speakers; tested with 32-channel linear arrays |
-| 🧩 **Native Unity integration** | Plug-and-play C# API via `At_Player` and `At_MasterOutput` components |
-| 🔧 **Custom speaker configurations** | Load any array geometry from `SpatialConfiguration.json` |
-| 🖥 **Cross-platform** | Windows (ASIO / WASAPI) and macOS (CoreAudio) |
-| 📱 **Android / Oculus Quest 2** | Oboe backend support included |
-| 🔬 **Research-backed** | Developed as part of WFS perceptual evaluation work at CNRS LMA |
+| **Wave Field Synthesis** | Physically-based spatial rendering over loudspeaker arrays |
+| **Simple Binaural mode** | HRTF-based headphone rendering, switchable at runtime |
+| **Real-time DSP** | High-performance C++ / JUCE audio engine, running on a dedicated thread |
+| **Dynamic source positioning** | Continuous 3D source position updates from Unity |
+| **Multi-channel output** | Supports up to 1024 virtual speakers; tested with 32-channel linear arrays |
+| **Native Unity integration** | Plug-and-play C# API via `At_Player` and `At_MasterOutput` components |
+| **Custom speaker configurations** | Load any array geometry from `SpatialConfiguration.json` |
+| **Cross-platform** | Windows (ASIO / WASAPI) and macOS (CoreAudio) |
+| **Android / Oculus Quest 2** | Oboe backend support included |
+| **Research-backed** | Developed as part of WFS perceptual evaluation work at CNRS LMA |
 
 ---
 
-## 🏗 Architecture
+## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────┐
 │                    Unity Project                        │
 │                                                         │
-│   At_MasterOutput.cs      At_Player.cs                 │
+│   At_MasterOutput.cs      At_Player.cs                  │
 │        │                       │                        │
 │        └──────────┬────────────┘                        │
 │                   │  C# API (PluginInterface.cs)        │
@@ -58,7 +58,7 @@ The engine targets multi-speaker WFS arrays (linear or custom configurations) an
                     │  extern "C" / P/Invoke
 ┌───────────────────┼─────────────────────────────────────┐
 │                   │  Native DSP Core (C++ / JUCE)       │
-│                   │                                      │
+│                   │                                     │
 │   AT_SpatializationEngine                               │
 │        ├── AT_Spatializer  (WFS rendering)              │
 │        ├── BinauralSimpleSpatializer  (HRTF mode)       │
@@ -72,7 +72,7 @@ The C++ core compiles to a **dynamic library** (`.dll` / `.dylib`) that Unity lo
 
 ---
 
-## 📁 Repository Structure
+## Repository Structure
 
 ```
 at-wavespace-unity-sdk/
@@ -93,7 +93,7 @@ at-wavespace-unity-sdk/
 
 ---
 
-## 📦 Installation — Unity Package (recommended)
+## Installation — Unity Package (recommended)
 
 The fastest way to get started is to import the prebuilt `.unitypackage` into your existing Unity project.
 
@@ -130,7 +130,7 @@ The fastest way to get started is to import the prebuilt `.unitypackage` into yo
 
 ---
 
-## 🔨 Recompiling the Native Library from Source
+## Recompiling the Native Library from Source
 
 The Unity demo project includes the full JUCE C++ source under `Unity_WaveSpace/AT_WaveSpace_JUCE/`. You can recompile the library directly and have the output land in the correct Unity `Plugins/` folder.
 
@@ -175,7 +175,7 @@ Back in Unity, click anywhere in the Project window to trigger an asset refresh.
 
 ---
 
-## 🖥 Console Application
+## Console Application
 
 A standalone **console test application** is also included for validating the DSP core without Unity.
 
@@ -185,7 +185,7 @@ Open `AT_WaveSpace_JUCE/AT_WaveSpace_Console.jucer` in Projucer and follow the s
 
 ---
 
-## 🎛 C# API Reference
+## C# API Reference
 
 ### `At_MasterOutput`
 
@@ -212,7 +212,7 @@ Attach to any sound-emitting GameObject.
 
 ---
 
-## 🔧 Advanced Configuration
+## Advanced Configuration
 
 ### Speaker Array Geometry
 
@@ -239,7 +239,7 @@ The WFS renderer includes a Near-Field Compensation filter. The reference distan
 
 ---
 
-## 📋 Requirements Summary
+## Requirements Summary
 
 | | Windows | macOS |
 |---|---|---|
@@ -251,7 +251,7 @@ The WFS renderer includes a Near-Field Compensation filter. The reference distan
 
 ---
 
-## 📜 License
+## License
 
 This project is released under the [MIT License](LICENSE).
 
@@ -259,7 +259,7 @@ The DSP algorithms are based on WFS research conducted at **CNRS LMA** (Laborato
 
 ---
 
-## 🙏 Acknowledgements
+## Acknowledgements
 
 - [CNRS LMA](https://www.lma.cnrs-mrs.fr/) — Research foundation for WFS rendering
 - [JUCE](https://juce.com/) — Cross-platform C++ audio framework
