@@ -409,7 +409,7 @@ The DSP algorithms are based on research conducted by Antoine Gonot at **CNRS-LM
 
 ## Acknowledgements
 
-- [CNRS LMA](https://www.lma.cnrs-mrs.fr/) — CNRS Research laboratory on Mechanics and Acoustics
+- [LMA](https://www.lma.cnrs-mrs.fr/) — CNRS Research laboratory on Mechanics and Acoustics
 - [JUCE](https://juce.com/) — Cross-platform C++ audio framework
 - KEMAR mannequin measurements — Head-Related Transfer Function (HRTF) dataset
 
@@ -419,7 +419,7 @@ The DSP algorithms are based on research conducted by Antoine Gonot at **CNRS-LM
 
 *Developed by [Antoine Gonot](https://github.com/agonotamu)*
 
-*Maître de Conférence, [Aix-Marseille Université](https://www.univ-amu.fr/) · Member of [PRISM](https://www.prism.cnrs.fr/en/) (CNRS UMR 7061) · Visiting researcher at [LMA](https://www.lma.cnrs-mrs.fr/) (CNRS UMR 7031)*
+*Associate Professor, [Aix-Marseille Université](https://www.univ-amu.fr/) · Member of [PRISM](https://www.prism.cnrs.fr/en/) (CNRS UMR 7061) · Visiting researcher at [LMA](https://www.lma.cnrs-mrs.fr/) (CNRS UMR 7031)*
 
 *Teaching at [Master Acoustique et Musicologie](https://formations.univ-amu.fr/fr/master/5HSM) and [Master SATIS](https://sciences.univ-amu.fr/fr/departements/satis), Aix-Marseille Université · Guest lecturer at ENS Louis Lumière*
 
