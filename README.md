@@ -354,7 +354,29 @@ A standalone **console test application** is also included for validating the DS
 
 Open `_at_wavespace_engine/_at_wavespace_consoleApp.jucer` in Projucer (or use the corresponding CMake target) and follow the same build steps as above. The console app initialises the `AudioDeviceManager` directly and is useful for offline corpus generation, calibration, and audio routing diagnostics.
 
+Before building, uncomment the following line in `AT_SpatConfig.h`:
+
+```cpp
+#define AT_SPAT_CONSOLE_APP
+```
+
+This disables async device scanning, which requires a running JUCE message loop and is not available in a headless console context.
+
 > **Note (macOS / Windows):** Console apps built with JUCE require a `ScopedJuceInitialiser_GUI` to be instantiated first in `main()`, even when running headlessly.
+
+---
+
+## Unity Debug Logging
+
+The engine includes a logging system that forwards native messages to the Unity Console. It is **disabled by default** for performance reasons.
+
+To enable it, comment out the following line in `AT_SpatConfig.h`:
+
+```cpp
+// #define DISABLE_UNITY_LOGGING
+```
+
+> ⚠️ **Performance warning:** Unity logging involves a callback from the audio thread into managed C# code. Even at low verbosity, this can introduce **significant latency spikes and audio underruns**, especially at small buffer sizes. **Never leave logging enabled in production or during perceptual evaluation.** Re-enable `DISABLE_UNITY_LOGGING` as soon as debugging is complete.
 
 ---
 
