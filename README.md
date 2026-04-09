@@ -23,7 +23,7 @@ The engine targets multi-speaker WFS arrays (line / circle / square or custom co
 
 
 <p align="center">
-  <img src="docs/gifs/demo.gif" alt="AT WaveSpace Demo"/>
+  <img src="docs/gifs/demo.gif" alt="AT WaveSpace Demo" width="640"/>
 </p>
 
 ---
