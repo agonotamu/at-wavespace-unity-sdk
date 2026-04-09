@@ -19,7 +19,7 @@
 
 It enables physically grounded 3D sound field reproduction inside Unity using a high-performance **C++ / JUCE DSP core**, exposed to Unity through a pure **C API** (`extern "C"`) and a **C# wrapper layer**.
 
-The engine targets multi-speaker WFS arrays (linear or custom configurations) and supports a **Simple Binaural** fallback mode for headphone rendering.
+The engine targets multi-speaker WFS arrays (line/circle/square or custom configurations) and supports a **Binaural Virtualization** for headphone rendering.
 
 <p align="center">
   <img src="docs/gifs/demo.gif" alt="AT WaveSpace Demo" width="720"/>
