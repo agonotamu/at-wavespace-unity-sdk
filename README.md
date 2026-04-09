@@ -32,13 +32,12 @@ The engine targets multi-speaker WFS arrays (line/circle/square or custom config
 | Feature | Description |
 |---|---|
 | **Wave Field Synthesis** | Physically-based spatial rendering over loudspeaker arrays using standart 2.5D driving function, with pre-filter, per-speaker delay and gain|
-| **Rendering Continuity over Space** | Automatic and smooth modification of the 2.5D driving function for sources either outside/behind or inside/in front of the virtual loudspeakers array. Time-reversal for focused sources is applied with a blending function and secondary sources regularisation is applied to avoid singularity at the frontiere|
-| **Compute Shader for Wavefront Vizualization** | A Unity prefab with a dedicated Compute shader is available to draw on a plane wavefront of a pure tone, at the position of a given 3D source|
+| **Dynamic source positioning and Continuity over Space** | Continuous 3D source position updates from Unity. Automatic and smooth modification of the 2.5D driving function for sources either outside/behind or inside/in front of the virtual loudspeakers array. Time-reversal for focused sources is applied with a blending function and secondary sources regularisation is applied to avoid singularity at the frontiere|
+| **Compute Shader for Wavefront Vizualization** | A Unity prefab with a dedicated Compute shader is available to draw the wavefront of a pure tone on a plane, using the gains and delays of a given 3D source|
 | **Binaural Virtualization** | Monitoring of the loudspeakers array over headphone using per-speaker HRTF convolution. |
 | **Simple Binaural mode** | HRTF-based headphone rendering, switchable at runtime |
 | **Near-Field Compensation** | Either "Binaural Virtualization and "Simple Binaural" modes can benefit of near-field compensation following the Distance Variation Function (DVF) approach |
-| **Real-time DSP** | High-performance C++ / JUCE audio engine, running on a dedicated thread |
-| **Dynamic source positioning** | Continuous 3D source position updates from Unity |
+| **Real-time DSP** | High-performance C++ / JUCE audio engine, running on a dedicated thread. Each source playback/spatialization and each convolution of virtual speakers are computed on separate thread, depending on ressources available|
 | **Multi-channel output** | Supports up to 1024 virtual speakers |
 | **Native Unity integration** | Plug-and-play C# API via `At_Player` and `At_MasterOutput` components |
 | **Custom speaker configurations** | Save and Load any array loudspeaker geometry from `.json` file |
