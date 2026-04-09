@@ -113,11 +113,42 @@ The fastest way to get started is to import the prebuilt `.unitypackage` into yo
 
 ### At_Player settings
 
+<p>
+  <img src="docs/images/AtPlayer3DEditor.png"/>
+</p>
+
+<p>
+  <img src="docs/images/AtPlayer2DEditor.png"/>
+</p>
+
 ### Wavefront Display settings
+<p>
+  <img src="docs/images/WavefrontDisplayEditor.png"/>
+</p>
+
+<p>
+  <img src="docs/images/Wavefront_250.png"/>
+</p>
+
+<p>
+  <img src="docs/images/Wavefront_1000.png"/>
+</p>
+
+<p>
+  <img src="docs/images/Wavefront_2000.png"/>
+</p>
 
 ### Advanced settings
 
+<p>
+  <img src="docs/images/AdvancedSettings.png"/>
+</p>
+
 ### Mixer
+
+<p>
+  <img src="docs/images/Mixer.png"/>
+</p>
 
 ---
 
