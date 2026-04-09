@@ -23,7 +23,7 @@ The engine targets multi-speaker WFS arrays (line / circle / square or custom co
 
 
 <p align="center">
-  <img src="docs/gifs/demo.gif"/>
+  <img src="docs/gifs/demo.gif" alt="AT WaveSpace Demo"/>
 </p>
 
 ---
@@ -316,60 +316,6 @@ Open `_at_wavespace_engine/_at_wavespace_consoleApp.jucer` in Projucer (or use t
 
 ---
 
-## C# API Reference
-
-### `At_MasterOutput`
-
-Attach to one GameObject per scene. Manages device initialisation, channel routing, and the WFS/Binaural mode.
-
-| Property | Type | Description |
-|---|---|---|
-| `outputDeviceName` | `string` | Target audio device name |
-| `speakerConfig` | `SpeakerConfig` | `Linear32`, `Linear16`, or `Custom` |
-| `spatializationMode` | `SpatMode` | `WFS` or `SimpleBinaural` |
-| `masterGain` | `float` | Global output gain (linear) |
-
-### `At_Player`
-
-Attach to any sound-emitting GameObject.
-
-| Method | Description |
-|---|---|
-| `Play()` | Start playback |
-| `Stop()` | Stop and rewind |
-| `SetPosition(Vector3)` | Update 3D source position in real-time |
-| `SetGain(float)` | Per-source gain (linear) |
-| `LoadClip(AudioClip)` | Load a new audio file at runtime |
-
----
-
-## Advanced Configuration
-
-### Speaker Array Geometry
-
-For non-standard arrays, set `speakerConfig` to `Custom` and define your geometry in `SpatialConfiguration.json`:
-
-```json
-{
-  "speakerConfig": "Custom",
-  "speakers": [
-    { "index": 0, "x": -2.9675, "y": 0.0, "z": 0.0 },
-    { "index": 1, "x": -2.7825, "y": 0.0, "z": 0.0 },
-    ...
-  ]
-}
-```
-
-### WFS ↔ Binaural Crossfade
-
-Mode transitions use an equal-power crossfade over a configurable number of blocks, ensuring glitch-free switching at runtime. Set the fade duration via `At_MasterOutput.fadeDurationMs`.
-
-### Near-Field Compensation (NFC)
-
-The WFS renderer includes a Near-Field Compensation filter. The reference distance `rRef` is set in `AT_SpatializationEngine` (default: `3.0 m`). Adjust it to match your listening distance for correct level compensation.
-
----
-
 ## Requirements Summary
 
 | | Windows | macOS |
@@ -387,13 +333,13 @@ The WFS renderer includes a Near-Field Compensation filter. The reference distan
 
 This project is released under the [MIT License](LICENSE).
 
-The DSP algorithms are based on WFS research conducted at **CNRS LMA** (Laboratoire de Mécanique et d'Acoustique), Marseille.
+The DSP algorithms are based on research conducted at **CNRS LMA** (Laboratoire de Mécanique et d'Acoustique), Marseille.
 
 ---
 
 ## Acknowledgements
 
-- [CNRS LMA](https://www.lma.cnrs-mrs.fr/) — Research foundation for WFS rendering
+- [CNRS LMA](https://www.lma.cnrs-mrs.fr/) — CNRS Research laboratory on Mechanics and Acoustics
 - [JUCE](https://juce.com/) — Cross-platform C++ audio framework
 - KEMAR mannequin measurements — Head-Related Transfer Function (HRTF) dataset
 
