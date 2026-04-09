@@ -107,7 +107,7 @@ The fastest way to get started is to import the prebuilt `.unitypackage` into yo
 
 ### At_MasterOutput Settings
 
-<p align="center"><img src="docs/images/MasterOutputEditor.png" width="580"/></p>
+<p align="center"><img src="docs/images/MasterOutputEditor.png" width="420"/></p>
 
 | Parameter | Description |
 |---|---|
@@ -128,35 +128,23 @@ The fastest way to get started is to import the prebuilt `.unitypackage` into yo
 
 ---
 
-### At_Player Settings — 3D Source
+### At_Player Settings
 
-<p align="center"><img src="docs/images/AtPlayer3DEditor.png" width="580"/></p>
+<table><tr>
+<td align="center" width="50%"><img src="docs/images/AtPlayer3DEditor.png" width="100%"/><br/><sub><b>3D (WFS)</b> mode</sub></td>
+<td align="center" width="50%"><img src="docs/images/AtPlayer2DEditor.png" width="100%"/><br/><sub><b>2D (Direct)</b> mode</sub></td>
+</tr></table>
 
 | Parameter | Description |
 |---|---|
 | **Audio File** | **Open** button browses to `StreamingAssets/Audio/` and accepts `.wav`, `.mp3`, or `.ogg`. The channel count is read from the file metadata automatically. The path is stored relative to `StreamingAssets/` for cross-platform portability. |
 | **Gain (dB)** | Per-source gain, −80 to +10 dB. |
-| **Spatialization Mode** | Toggle between **3D (WFS)** — full wave field synthesis spatialisation — and **2D (Direct)** — multichannel direct routing to virtual speakers. |
+| **Spatialization Mode** | Toggle between **3D (WFS)** — full wave field synthesis spatialisation — and **2D (Direct)** — multichannel direct routing to virtual speakers, bypassing WFS. |
 | **Play On Awake** | Start playback automatically when the scene starts. |
 | **Loop** | Loop the audio file continuously. |
 | **Playback Speed** | Playback rate multiplier, 0.1× to 4.0×. |
-| **Minimum Distance (m)** | Distance below which amplitude attenuation is clamped (0.1–50 m). Prevents the gain from diverging as the source approaches a virtual speaker. |
-| **Attenuation** | Exponent α of the `1/d^α` distance law (0–2). Set to `0` to disable distance attenuation entirely. |
-
----
-
-### At_Player Settings — 2D Source
-
-<p align="center"><img src="docs/images/AtPlayer2DEditor.png" width="580"/></p>
-
-| Parameter | Description |
-|---|---|
-| **Audio File** | **Open** button browses to `StreamingAssets/Audio/`. The file's channel count is read from metadata and determines how many virtual speaker outputs are fed. |
-| **Gain (dB)** | Per-source gain, −80 to +10 dB. |
-| **Spatialization Mode** | Set to **2D (Direct)**: each channel of the audio file is routed directly to the corresponding virtual speaker output, bypassing WFS spatialisation. |
-| **Play On Awake** | Start playback automatically when the scene starts. |
-| **Loop** | Loop the audio file continuously. |
-| **Playback Speed** | Playback rate multiplier, 0.1× to 4.0×. |
+| **Minimum Distance (m)** | *(3D only)* Distance below which amplitude attenuation is clamped (0.1–50 m). Prevents the gain from diverging as the source approaches a virtual speaker. |
+| **Attenuation** | *(3D only)* Exponent α of the `1/d^α` distance law (0–2). Set to `0` to disable distance attenuation entirely. |
 
 ---
 
@@ -164,7 +152,7 @@ The fastest way to get started is to import the prebuilt `.unitypackage` into yo
 
 > Accessible via **AT_WaveSpace → Advanced Settings…**
 
-<p align="center"><img src="docs/images/AdvancedSettings.png" width="580"/></p>
+<p align="center"><img src="docs/images/AdvancedSettings.png" width="420"/></p>
 
 **MASTER** — the following parameters require Binaural Virtualization to be enabled in `At_MasterOutput`.
 
@@ -191,7 +179,7 @@ The fastest way to get started is to import the prebuilt `.unitypackage` into yo
 
 > Accessible via **AT_WaveSpace → Mixer**
 
-<p align="center"><img src="docs/images/Mixer.png" width="580"/></p>
+<p align="center"><img src="docs/images/Mixer.png" width="420"/></p>
 
 The Mixer window provides per-source and master gain control, as well as individual **Play / Stop** buttons for each active source — useful for testing and live scene editing without leaving the Unity Editor. Each source strip displays its name, current gain (in dB), and playback state.
 
@@ -201,7 +189,7 @@ The Mixer window provides per-source and master gain control, as well as individ
 
 ### Wavefront Display Settings
 
-<p align="center"><img src="docs/images/WavefrontDisplayEditor.png" width="580"/></p>
+<p align="center"><img src="docs/images/WavefrontDisplayEditor.png" width="420"/></p>
 
 | Parameter | Description |
 |---|---|
