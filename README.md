@@ -86,7 +86,7 @@ at-wavespace-unity-sdk/
 
 ---
 
-## Installation — Unity Package (recommended)
+## Quick Start — Unity Package (recommended)
 
 The fastest way to get started is to import the prebuilt `.unitypackage` into your existing Unity project.
 
