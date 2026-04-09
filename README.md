@@ -376,7 +376,7 @@ To enable it, comment out the following line in `AT_SpatConfig.h`:
 // #define DISABLE_UNITY_LOGGING
 ```
 
-> ⚠️ **Performance warning:** Unity logging involves a callback from the audio thread into managed C# code. Even at low verbosity, this can introduce **significant latency spikes and audio underruns**, especially at small buffer sizes. **Never leave logging enabled in production or during perceptual evaluation.** Re-enable `DISABLE_UNITY_LOGGING` as soon as debugging is complete.
+> ⚠️ **Performance warning:** Unity logging involves a callback from the audio thread into managed C# code. Even at low verbosity, this can introduce **significant latency spikes and audio underruns**, especially at small buffer sizes. **Never leave logging enabled in production.** Re-enable `DISABLE_UNITY_LOGGING` as soon as debugging is complete.
 
 ---
 
