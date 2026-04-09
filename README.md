@@ -274,13 +274,24 @@ In Projucer, go to **File → Global Paths** and set **Path to JUCE** to your lo
 
 #### 3. Configure the exporter
 
-Select the exporter for your platform (Visual Studio or Xcode). Verify that the **Binary Location** points to:
+Select the exporter for your platform (Visual Studio or Xcode). The project is already configured with post-build commands that copy the compiled library directly into the Unity project's plugin folder — no manual **Binary Location** change is needed.
 
+**macOS (Xcode)** — post-build script:
+```bash
+mkdir -p "$PROJECT_DIR/../../../Assets/At_WaveSpace/Plugins/MacOSX/"
+cp -v "$TARGET_BUILD_DIR/$PRODUCT_NAME.dylib" "$PROJECT_DIR/../../../Assets/At_WaveSpace/Plugins/MacOSX/"
+codesign --force --sign - "$PROJECT_DIR/../../../Assets/At_WaveSpace/Plugins/MacOSX/$PRODUCT_NAME.dylib"
 ```
-../../Assets/Plugins/
-```
+Output: `Assets/At_WaveSpace/Plugins/MacOSX/at_wavespace_engine.dylib`
 
-This ensures the compiled `.dll` / `.dylib` is written directly into the Unity project's plugin folder.
+**Windows (Visual Studio)** — post-build script:
+```bat
+if not exist "$(ProjectDir)..\..\..\Assets\At_WaveSpace\Plugins\Win\" ^
+    mkdir "$(ProjectDir)..\..\..\Assets\At_WaveSpace\Plugins\Win\"
+copy /Y "$(TargetDir)$(TargetName).dll" "$(ProjectDir)..\..\..\Assets\At_WaveSpace\Plugins\Win\"
+copy /Y "$(TargetDir)$(TargetName).pdb" "$(ProjectDir)..\..\..\Assets\At_WaveSpace\Plugins\Win\" 2>nul
+```
+Output: `Assets/At_WaveSpace/Plugins/Win/at_wavespace_engine.dll`
 
 #### 4. Save and open in IDE
 
