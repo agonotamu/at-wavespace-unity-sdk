@@ -33,6 +33,7 @@ The engine targets multi-speaker WFS arrays (line/circle/square or custom config
 |---|---|
 | **Wave Field Synthesis** | Physically-based spatial rendering over loudspeaker arrays using standart 2.5D driving function, with pre-filter, per-speaker delay and gain|
 | **Dynamic source positioning and Continuity over Space** | Continuous 3D source position updates from Unity. Automatic and smooth modification of the 2.5D driving function for sources either outside/behind or inside/in front of the virtual loudspeakers array. Time-reversal for focused sources is applied with a blending function and secondary sources regularisation is applied to avoid singularity at the frontiere|
+| **2D vs. 3D Sources ** | Manage 2D source, i.e. multichannel audio files with arbitrary number of channels directly routed to the virtual speaker output (2D) )|
 | **Compute Shader for Wavefront Vizualization** | A Unity prefab with a dedicated Compute shader is available to draw the wavefront of a pure tone on a plane, using the gains and delays of a given 3D source|
 | **Binaural Virtualization** | Monitoring of the loudspeakers array over headphone using per-speaker HRTF convolution. |
 | **Simple Binaural mode** | HRTF-based headphone rendering, switchable at runtime |
@@ -65,11 +66,13 @@ at-wavespace-unity-sdk/
 │   ├── Assets/
 │   │   ├── AT_WaveSpace/     # C# scripts, prefabs, configuration
 │   │   └── Plugins/          # Compiled native libraries (macOS / Windows)
-│   └── AT_WaveSpace_JUCE/    # JUCE C++ source — compile the lib directly here
-│       ├── AT_WaveSpace.jucer          # Projucer project — native library
-│       └── AT_WaveSpace_Console.jucer  # Projucer project — standalone console app
+│   └── _at_wavespace_engine/    # JUCE C++ source — compile the lib directly here
+│       ├── _at_wavespace_engine.jucer          # Projucer project — native library
+│       └── _at_wavespace_consoleApp.jucer  # Projucer project — standalone console app
+│       └── CMakeLists.txt  # Cmake file for XCode or Visual Sutdio project creation (alternative to .jucer)
+│       └── CMakePresets.json  # Preset file for CMake
 ├── UnityPackage/
-│   └── AT_WaveSpace.unitypackage  # Ready-to-import Unity package
+│   └── At_WaveSpace_1.0.unitypackage  # Ready-to-import Unity package
 ├── docs/
 │   ├── images/
 │   └── gifs/
@@ -90,28 +93,31 @@ The fastest way to get started is to import the prebuilt `.unitypackage` into yo
 
 ### Steps
 
-1. **Download** `AT_WaveSpace.unitypackage` from the [`UnityPackage/`](UnityPackage/) folder.
+1. **Download** `At_WaveSpace_1.0.unitypackage` from the [`UnityPackage/`](UnityPackage/) folder.
 
 2. In Unity, go to **Assets → Import Package → Custom Package…** and select the downloaded file.
 
 3. Import all assets (scripts, prefabs, native plugins, and configuration files).
 
-4. In your scene, add the **`At_MasterOutput`** component to an empty GameObject. This initialises the audio engine and manages the output device.
+4. Open the demo scene "WaveSpace_Starter.unity" in the folder "\Assets\At_WaveSpace\Scenes".
 
-5. Add the **`At_Player`** component to any GameObject that should emit spatial audio. Assign an audio clip and set the initial position.
+5. Press **Play**. The native DSP core will initialise automatically.
 
-6. Configure the speaker array in **`SpatialConfiguration.json`** (found in `Assets/AT_WaveSpace/`):
+## Settings via Unity Editor
 
-```json
-{
-  "speakerConfig": "Custom",
-  "speakerCount": 32,
-  "speakerSpacing": 0.185,
-  "outputDeviceName": "Your ASIO Device"
-}
-```
+### At_Player settings
 
-7. Press **Play**. The native DSP core will initialise automatically.
+<p>
+  <img src="docs/images/MasterOutputEditor.png"/>
+</p>
+
+### At_Player settings
+
+### Wavefront Display settings
+
+### Advanced settings
+
+### Mixer
 
 ---
 
