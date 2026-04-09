@@ -15,16 +15,18 @@
 
 ## Overview
 
+<table><tr>
+<td width="45%" valign="top"><img src="docs/gifs/demo.gif" alt="AT WaveSpace Demo" width="100%"/></td>
+<td valign="middle">
+
 **AT WaveSpace** is a native spatial audio engine based on **Wave Field Synthesis (WFS)**, developed by Antoine Gonot at the [CNRS LMA](https://www.lma.cnrs-mrs.fr/) laboratory in Marseille, France.
 
 It enables physically grounded 3D sound field reproduction inside Unity using a high-performance **C++ / JUCE DSP core**, exposed to Unity through a pure **C API** (`extern "C"`) and a **C# wrapper layer**.
 
 The engine targets multi-speaker WFS arrays (line / circle / square or custom configurations) and supports **Binaural Virtualization** for headphone rendering.
 
-
-<p align="center">
-  <img src="docs/gifs/demo.gif" alt="AT WaveSpace Demo" width="480"/>
-</p>
+</td>
+</tr></table>
 
 ---
 
