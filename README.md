@@ -57,6 +57,33 @@ The engine targets multi-speaker WFS arrays (line / circle / square or custom co
 
 The C++ core compiles to a **dynamic library** (`.dll` / `.dylib`) that Unity loads via P/Invoke. All DSP processing, speaker rendering, and device management occur in the native layer. Unity provides scene geometry and playback control.
 
+Virtual loudspeakers are standard Unity GameObjects. The `At_MasterOutput`, `At_Player`, and `At_Listener` MonoBehaviours synchronise their transforms to the DSP layer each frame and persist scene state as JSON in `StreamingAssets/`. The full C++ source can be built either as the dynamic library for Unity integration or as a standalone console application.
+
+### Plugin Interface — C API
+
+The native library exposes a pure C interface (`extern "C"`) invoked by the Unity C# layer via P/Invoke. The principal functions are listed below.
+
+| Function | Description | Called by |
+|---|---|---|
+| `AT_WS_initialize()` | Create the global `AudioManager` instance and initialise JUCE | `At_MasterOutput` |
+| `AT_WS_setup(...)` | Configure the audio device and start the engine (channel count, buffer size, binaural flag) | `At_MasterOutput` |
+| `AT_WS_stop()` / `AT_WS_shutdown()` | Stop the engine and close the plugin | `At_MasterOutput` |
+| `AT_WS_addPlayer(...)` / `AT_WS_removePlayer(...)` | Add or remove a player from the engine | `At_MasterOutput` |
+| `AT_WS_setVirtualSpeakerTransform(...)` | Set the position and orientation of a virtual speaker | `At_MasterOutput` |
+| `AT_WS_setListenerTransform(...)` | Set the position and rotation of the listener | `At_MasterOutput` |
+| `AT_WS_setMasterGain(...)` | Set the global output gain | `At_MasterOutput` |
+| `AT_WS_loadHRTF(...)` | Load an HRTF dataset from a `.txt` file for binaural spatialisation | `At_MasterOutput` |
+| `AT_WS_enableAllPlayersSpeakerMask(...)` | Enable or disable the speaker activation mask on all players | `At_MasterOutput` |
+| `AT_WS_setIsSimpleBinauralSpat(...)` | Enable Simple Binaural mode for A/B comparison | `At_MasterOutput` |
+| `AT_WS_setIsPrefilterAllPlayers(...)` | Enable or disable the 2.5D WFS pre-filter on all players | `At_MasterOutput` |
+| `AT_WS_setIsWfsGain(...)` | Enable or disable per-speaker WFS amplitude weighting | `At_MasterOutput` |
+| `AT_WS_setIsNearFieldCorrection(...)` | Enable or disable Near-Field Correction (DVF) | `At_MasterOutput` |
+| `AT_WS_setHrtfTruncate(...)` | Enable or disable HRTF truncation to 512 samples | `At_MasterOutput` |
+| `AT_WS_setPlayerFilePath(...)` | Load an audio file into a player | `At_Player` |
+| `AT_WS_startPlayer(...)` / `AT_WS_stopPlayer(...)` | Start or stop playback for a player | `At_Player` |
+| `AT_WS_setPlayerTransform(...)` | Set the position and rotation of a player | `At_Player` |
+| `AT_WS_setPlayerParams(...)` | Set gain, playback speed, attenuation exponent, and minimum distance | `At_Player` |
+
 ---
 
 ## Repository Structure
