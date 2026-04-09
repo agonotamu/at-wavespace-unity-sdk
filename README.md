@@ -32,7 +32,7 @@ The engine targets multi-speaker WFS arrays (line/circle/square or custom config
 | Feature | Description |
 |---|---|
 | **Wave Field Synthesis** | Physically-based spatial rendering over loudspeaker arrays using standart 2.5D driving function, with pre-filter, per-speaker delay and gain|
-| **Rendering Continuity over Space** | The Audio engine modify automatically and smoothly the WFS driving function for sources either outside/behind or inside/in front of the virtual loudspeakers array. Time-reversal for focused sources is applied with a blending function and secondary sources regularisation is applied to avoid singularity at the frontiere|
+| **Rendering Continuity over Space** | Automatic and smooth modification of the 2.5D driving function for sources either outside/behind or inside/in front of the virtual loudspeakers array. Time-reversal for focused sources is applied with a blending function and secondary sources regularisation is applied to avoid singularity at the frontiere|
 | **Binaural Virtualization** | Monitoring of the loudspeakers array over headphone using per-speaker HRTF convolution. |
 | **Simple Binaural mode** | HRTF-based headphone rendering, switchable at runtime |
 | **Near-Field Compensation** | Either "Binaural Virtualization and "Simple Binaural" modes can benefit of near-field compensation following the Distance Variation Function (DVF) approach |
