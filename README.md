@@ -55,13 +55,11 @@ The engine targets multi-speaker WFS arrays (line / circle / square or custom co
   <img src="docs/images/WaveSpaceArchiLib.png" alt="AT WaveSpace Architecture" width="720"/>
 </p>
 
-The C++ core compiles to a **dynamic library** (`.dll` / `.dylib`) that Unity loads via P/Invoke. All DSP processing, speaker rendering, and device management occur in the native layer. Unity provides scene geometry and playback control.
-
-Virtual loudspeakers are standard Unity GameObjects. The `At_MasterOutput`, `At_Player`, and `At_Listener` MonoBehaviours synchronise their transforms to the DSP layer each frame and persist scene state as JSON in `StreamingAssets/`. The full C++ source can be built either as the dynamic library for Unity integration or as a standalone console application.
+The C++ core compiles to a **dynamic library** (`.dll` / `.dylib`) loaded by Unity via P/Invoke. All DSP processing, speaker rendering, and device management occur in the native layer; Unity provides scene geometry and playback control. Virtual loudspeakers, sources, and the listener are standard GameObjects whose transforms are synchronised to the DSP layer each frame, with scene state persisted as JSON in `StreamingAssets/`.
 
 ### Plugin Interface — C API
 
-The native library exposes a pure C interface (`extern "C"`) invoked by the Unity C# layer via P/Invoke. The principal functions are listed below.
+The library exposes a pure `extern "C"` interface, invoked by `At_MasterOutput` and `At_Player` via P/Invoke.
 
 | Function | Description | Called by |
 |---|---|---|
