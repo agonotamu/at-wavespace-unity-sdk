@@ -310,7 +310,7 @@ Back in Unity, click anywhere in the Project window to trigger an asset refresh.
 
 ### Option B — CMake
 
-The repository includes a `CMakeLists.txt` and a `CMakePresets.json` under `_at_wavespace_engine/`, providing a self-contained build without Projucer.
+The repository includes a `CMakeLists.txt` and a `CMakePresets.json` under `_at_wavespace_engine/`. CMake 3.22+ is required; no Projucer needed.
 
 #### 1. Navigate to the source directory
 
@@ -324,27 +324,73 @@ cd Unity_WaveSpace/_at_wavespace_engine
 cmake --list-presets
 ```
 
-#### 3. Configure and build
+Available presets (platform-filtered automatically):
 
-Select the preset that matches your platform and target. For example, to build a macOS Universal Binary (arm64 + x86_64):
+| Preset | Platform | Generator | Config |
+|---|---|---|---|
+| `macos-release` | macOS | Xcode | Release — Universal Binary (x86_64 + arm64) |
+| `macos-debug` | macOS | Xcode | Debug — Universal Binary |
+| `windows-x64-release` | Windows | Visual Studio 17 2022 | Release x64 |
+| `windows-x64-debug` | Windows | Visual Studio 17 2022 | Debug x64 |
+| `windows-x86-release` | Windows | Visual Studio 17 2022 | Release Win32 |
+
+#### 3. Generate the IDE project
+
+This step creates the Xcode or Visual Studio project in the `Builds/` folder:
 
 ```bash
-cmake --preset mac-release-universal
-cmake --build --preset mac-release-universal
+# macOS
+cmake --preset macos-release
+
+# Windows
+cmake --preset windows-x64-release
 ```
 
-For a Windows Release x64 build:
+The generated projects are placed in:
+- **macOS:** `Builds/MacOSX/at_wavespace_engine.xcodeproj`
+- **Windows:** `Builds/VisualStudio2022/at_wavespace_engine.sln`
+
+You can open them directly in Xcode or Visual Studio for editing, debugging, and building.
+
+#### 4. Compile
+
+**Option A — command line** (recommended for CI or scripted builds):
 
 ```bash
-cmake --preset windows-release-x64
-cmake --build --preset windows-release-x64
+# macOS
+cmake --build --preset macos-release
+
+# Windows
+cmake --build --preset windows-x64-release
 ```
 
-> **macOS note:** The presets configure `CMAKE_OSX_ARCHITECTURES="x86_64;arm64"` and set the deployment target to macOS 11.0 automatically.
+**Option B — IDE**: open the generated `.xcodeproj` or `.sln` and build the `Release` scheme/configuration as usual.
 
-#### 4. Refresh Unity
+The post-build step copies the compiled library automatically:
+- **macOS →** `Assets/At_WaveSpace/Plugins/MacOSX/at_wavespace_engine.dylib` (codesigned)
+- **Windows →** `Assets/At_WaveSpace/Plugins/Win/at_wavespace_engine.dll`
 
-The compiled library is written to `Assets/Plugins/`. Switch back to Unity and click anywhere in the Project window to trigger an asset refresh.
+#### VS Code
+
+VS Code with the [CMake Tools extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode.cmake-tools) can use the existing presets directly. However, the current presets generate Xcode and Visual Studio projects, which may limit IntelliSense integration in VS Code. For a better VS Code experience, add a `Ninja`-based preset to `CMakePresets.json`:
+
+```json
+{
+  "name": "macos-release-ninja",
+  "displayName": "macOS Release — Ninja (VS Code)",
+  "generator": "Ninja",
+  "binaryDir": "${sourceDir}/Builds/Ninja",
+  "cacheVariables": {
+    "CMAKE_BUILD_TYPE": "Release",
+    "CMAKE_OSX_ARCHITECTURES": "arm64",
+    "CMAKE_OSX_DEPLOYMENT_TARGET": "11.0"
+  }
+}
+```
+
+#### 5. Refresh Unity
+
+Switch back to Unity and click anywhere in the Project window to trigger an asset refresh.
 
 ---
 
