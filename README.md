@@ -437,8 +437,6 @@ To enable logging, use one of the following three approaches:
 
 > ⚠️ **Performance warning:** Unity logging involves a callback from the audio thread into managed C# code. Even at low verbosity, this can introduce **significant latency spikes and audio underruns**, especially at small buffer sizes. **Never leave logging enabled in production or during perceptual evaluation.**
 
-> ⚠️ **Performance warning:** Unity logging involves a callback from the audio thread into managed C# code. Even at low verbosity, this can introduce **significant latency spikes and audio underruns**, especially at small buffer sizes. **Never leave logging enabled in production or during perceptual evaluation.**
-
 ---
 
 ## HRTF Format — SOFA to .txt Conversion
