@@ -53,7 +53,7 @@ public class At_MasterOutputEditor : Editor
         "select", "1D", "2D SQUARE", "2D HALF-SQUARE", "2D CIRCLE", "2D HALF-CIRCLE", "Custom"
     };
     private readonly string[] samplingRateConfigSelection = { "44100", "48000" };
-    private readonly string[] bufferSizeConfigSelection   = { "64", "128", "256", "512", "1024", "2048" };
+    private readonly string[] bufferSizeConfigSelection   = { "64", "128", "256", "512", "1024", "2048", "4096" };
 
     private int  selectSpeakerConfig  = 0;
     private int  outputConfigDimension = 0;
@@ -736,7 +736,44 @@ public class At_MasterOutputEditor : Editor
 
         meters = new float[channelCount];
 
-        // ── 6. Sync editor state & save ───────────────────────────────────────────
+        // ── 6. Create source GameObjects (empty placeholders) ─────────────────
+        // Sources described in the .spatconfig are materialized as plain
+        // GameObjects so their positions are immediately visible in the Scene
+        // view.  They intentionally have no At_Player component on import;
+        // the user can add one manually when needed.  A subsequent
+        // SaveCustomSpeakerConfiguration() will then capture them automatically
+        // (it collects every GameObject that carries an At_Player component).
+        //
+        // Existing source objects from a previous load are destroyed first so
+        // we never accumulate duplicates across successive loads.
+        GameObject existingSourceParent = GameObject.Find("Sources");
+        if (existingSourceParent != null)
+            DestroyImmediate(existingSourceParent);
+
+        if (config.numSourcePosition > 0
+            && config.source_posx != null
+            && config.source_posx.Length >= config.numSourcePosition)
+        {
+            int nSrc = config.numSourcePosition;
+            GameObject sourceParent = new GameObject("Sources");
+
+            for (int i = 0; i < nSrc; i++)
+            {
+                string srcName = (config.source_name != null && i < config.source_name.Length
+                                  && !string.IsNullOrEmpty(config.source_name[i]))
+                    ? config.source_name[i]
+                    : "source_" + i;
+
+                GameObject srcGO = new GameObject(srcName);
+                srcGO.transform.SetParent(sourceParent.transform, worldPositionStays: false);
+                srcGO.transform.position = new Vector3(
+                    config.source_posx[i],
+                    config.source_posy[i],
+                    config.source_posz[i]);
+            }
+        }
+
+        // ── 7. Sync editor state & save ───────────────────────────────────────────
         selectSpeakerConfig = 6;
         shouldSave          = true;
         EditorSceneManager.SaveScene(SceneManager.GetActiveScene());
@@ -760,6 +797,20 @@ public class At_MasterOutputEditor : Editor
         System.Array.Sort(vss, (a, b) => a.id.CompareTo(b.id));
         int n = vss.Length;
 
+        // ── 2. Collect At_Player source positions ─────────────────────────────
+        // Every GameObject that carries an At_Player component is treated as a
+        // source.  Its world position and name are exported alongside the
+        // speaker data so the .spatconfig round-trips cleanly through
+        // ApplyCustomSpeakerConfiguration.
+        At_Player[] players = FindObjectsOfType<At_Player>();
+
+        // Sort by GameObject name for stable ordering across saves
+        System.Array.Sort(players, (a, b) =>
+            string.Compare(a.gameObject.name, b.gameObject.name,
+                           System.StringComparison.OrdinalIgnoreCase));
+
+        int nSrc = players.Length;
+
         At_SpatialConfigState config = new At_SpatialConfigState
         {
             numSpeakerPosition = n,
@@ -770,6 +821,12 @@ public class At_MasterOutputEditor : Editor
             speaker_fwdx = new float[n],
             speaker_fwdy = new float[n],
             speaker_fwdz = new float[n],
+
+            numSourcePosition = nSrc,
+            source_name = new string[nSrc],
+            source_posx = new float[nSrc],
+            source_posy = new float[nSrc],
+            source_posz = new float[nSrc],
         };
 
         for (int i = 0; i < n; i++)
@@ -781,6 +838,14 @@ public class At_MasterOutputEditor : Editor
             config.speaker_fwdx[i] = vss[i].transform.forward.x;
             config.speaker_fwdy[i] = vss[i].transform.forward.y;
             config.speaker_fwdz[i] = vss[i].transform.forward.z;
+        }
+
+        for (int i = 0; i < nSrc; i++)
+        {
+            config.source_name[i] = players[i].gameObject.name;
+            config.source_posx[i] = players[i].transform.position.x;
+            config.source_posy[i] = players[i].transform.position.y;
+            config.source_posz[i] = players[i].transform.position.z;
         }
 
         string spatConfigDir = Path.Combine(Application.streamingAssetsPath, "SpatConfig");

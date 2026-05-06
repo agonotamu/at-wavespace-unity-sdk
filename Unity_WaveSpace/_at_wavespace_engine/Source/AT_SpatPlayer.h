@@ -352,10 +352,30 @@ namespace AT
         double m_sampleRate = 0.0;
         
         /**
-         * @brief Current gain
+         * @brief Current gain (dB)
          */
         float m_gain = 0.0f;
-        
+
+        /**
+         * @brief Linear gain cached from m_gain (dB). Updated once in setGain().
+         *
+         * Avoids recomputing std::pow(10, gain/20) on every sample inside
+         * updateForNextBlock(). Initialised to 1.0 (0 dB).
+         */
+        float m_linearGain = 1.0f;
+
+        /**
+         * @brief Pre-allocated per-sample gain ramp buffer for 2D fade-out.
+         *
+         * Sized to m_samplesPerBlock in prepareToPlay(). The ramp (1.0 → 0.0)
+         * is written once per fading block and then used as the per-element
+         * multiplier in FloatVectorOperations::addWithMultiply(), which maps
+         * to SSE/AVX/NEON on supported platforms.
+         *
+         * Never reallocated in the audio thread.
+         */
+        std::unique_ptr<float[]> m_puGainRamp;
+
         /**
          * @brief Current playback speed multiplier
          */

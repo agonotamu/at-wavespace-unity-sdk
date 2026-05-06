@@ -182,55 +182,38 @@ namespace AT
             {
                 for (int channel = 0; channel < m_numChannel; ++channel)
                 {
-                    if (channel < m_numChannel)
+                    float* channelData = m_puAsci->buffer->getWritePointer(channel, m_puAsci->startSample);
+                    const int numSamples = m_puAsci->numSamples;
+
+                    if (channelData == nullptr)
                     {
-                        float* channelData = m_puAsci->buffer->getWritePointer(channel, m_puAsci->startSample);
-                        
-                        if (channelData != nullptr)
-                        {
-                            // Calculate sum of squares for RMS calculation
-                            float sumOfSquares = 0.0f;
-                            
-                            for (int sample = 0; sample < m_puAsci->numSamples; ++sample)
-                            {
-                                
-                                // Apply Gain on the audio file
-                                channelData[sample] *= std::pow(10.0f, m_gain/20.0f);
-                                
-                                // if  m_isPrefilter == true and the player is 3D, then apply pre-filtering only on the first channel
-                                if (m_isPrefilter && m_is3D && channel == 0) {
-                                    // Apply the half-derivative prefilter (sqrt(j*omega)) to channel 0 only.
-                                    // The prefilter corrects the +3 dB/octave amplitude error inherent in 2.5D
-                                    // WFS synthesis. It must be applied before the sample enters m_wfsDelayLine
-                                    // so that all virtual speaker outputs receive the corrected waveform.
-                                    channelData[sample] = m_wfsPrefilter.processSample(channelData[sample]);
-                                }
-                                
-                                sumOfSquares += channelData[sample] * channelData[sample];
-                            }
-                            
-                            // Calculate RMS (Root Mean Square)
-                            float rms = std::sqrt(sumOfSquares / static_cast<float>(m_puAsci->numSamples));
-                            
-                            // Convert RMS to decibels (dB)
-                            if (rms > 0.00001f)  // Threshold to avoid log(0)
-                            {
-                                m_puMeters[channel] = 20.0f * std::log10f(rms);
-                                
-                                // Clamp to reasonable range [-90, 0] dB
-                                if (m_puMeters[channel] < -90.0f) m_puMeters[channel] = -90.0f;
-                                if (m_puMeters[channel] > 0.0f) m_puMeters[channel] = 0.0f;
-                            }
-                            else
-                            {
-                                m_puMeters[channel] = -90.0f;  // Silence
-                            }
-                        }
-                        else
-                        {
-                            m_puMeters[channel] = -90.0f;  // No data available
-                        }
+                        m_puMeters[channel] = -90.0f;  // No data available
+                        continue;
                     }
+
+                    // ── Step 1 : Apply gain (SIMD) ─────────────────────────────────────
+                    // m_linearGain is cached in setGain() — no std::pow here.
+                    // FloatVectorOperations::multiply() maps to SSE2/AVX/NEON multiply.
+                    juce::FloatVectorOperations::multiply(channelData, m_linearGain, numSamples);
+
+                    // ── Step 2 : WFS half-derivative prefilter (per-sample, ch0 3D only)
+                    // IIR state is recursive — cannot be vectorised. Applied after gain so
+                    // the prefilter sees the already-scaled signal (correct ordering).
+                    if (m_isPrefilter && m_is3D && channel == 0)
+                    {
+                        for (int s = 0; s < numSamples; ++s)
+                            channelData[s] = m_wfsPrefilter.processSample(channelData[s]);
+                    }
+
+                    // ── Step 3 : RMS via AudioBuffer::getRMSLevel() ────────────────────
+                    // Internally optimised by JUCE (uses SIMD where available).
+                    // Called on the buffer directly — no raw pointer arithmetic needed.
+                    const float rms = m_puAsci->buffer->getRMSLevel(
+                                          channel, m_puAsci->startSample, numSamples);
+
+                    m_puMeters[channel] = (rms > 0.00001f)
+                        ? juce::jlimit(-90.0f, 0.0f, 20.0f * std::log10f(rms))
+                        : -90.0f;
                 }
             }
         }
@@ -410,15 +393,73 @@ namespace AT
             : std::min(m_numChannel,
                        std::min(m_numOutputChannels, bufferToFill.buffer->getNumChannels()));
 
+        // ══════════════════════════════════════════════════════════════════════
+        // FAST PATH — 2D players only
+        //
+        // 2D players have no delay line and no spatializer.
+        // m_linearGain has already been applied to the source buffer in
+        // updateForNextBlock() (SIMD multiply). The only remaining work is:
+        //
+        //   dst[ch][s] += src[ch][s] * distanceGain   (no fade)
+        //   dst[ch][s] += src[ch][s] * ramp[s]        (fade-out)
+        //
+        // Both are expressed as block-level FloatVectorOperations calls so the
+        // compiler/CPU can issue vectorised loads — no per-sample loop needed.
+        // ══════════════════════════════════════════════════════════════════════
+        if (!m_is3D)
+        {
+            const int N = bufferToFill.numSamples;
+
+            if (!m_isFadingOut)
+            {
+                // ── No fade : uniform scalar multiplier ──────────────────────
+                // addWithMultiply(dst, src, scalar, N):  dst[i] += src[i] * scalar
+                for (int ch = 0; ch < numChannelsToProcess; ++ch)
+                {
+                    const float* src = m_puAsci->buffer->getReadPointer(ch, m_puAsci->startSample);
+                    float* dst = bufferToFill.buffer->getWritePointer(ch, bufferToFill.startSample);
+                    juce::FloatVectorOperations::addWithMultiply(dst, src, distanceGain, N);
+                }
+            }
+            else
+            {
+                // ── Fade-out : pre-compute gain ramp once, then SIMD per channel
+                //
+                // The ramp (m_fadeGain → 0) × distanceGain is identical for every
+                // channel, so we compute it once into m_puGainRamp.
+                //
+                // addWithMultiply(dst, src1, src2, N):  dst[i] += src1[i] * src2[i]
+                // src2 is the gain ramp — element-wise envelope multiplication.
+                jassert(m_puGainRamp != nullptr);
+                for (int s = 0; s < N; ++s)
+                {
+                    m_puGainRamp[s] = m_fadeGain * distanceGain;
+                    m_fadeGain = std::max(0.0f, m_fadeGain - m_fadeStep);
+                }
+
+                for (int ch = 0; ch < numChannelsToProcess; ++ch)
+                {
+                    const float* src = m_puAsci->buffer->getReadPointer(ch, m_puAsci->startSample);
+                    float* dst = bufferToFill.buffer->getWritePointer(ch, bufferToFill.startSample);
+                    juce::FloatVectorOperations::addWithMultiply(dst, src, m_puGainRamp.get(), N);
+                }
+
+                if (m_fadeGain <= 0.0f)
+                {
+                    m_isFadingOut = false;
+                    m_fadeCompletedEvent.signal();
+                }
+            }
+            return;  // bypass WFS/3D loop entirely
+        }
+
+        // ── WFS / 3D mode : sample-by-sample loop (unchanged) ───────────────
         for (auto sampleIndex = 0; sampleIndex < bufferToFill.numSamples; sampleIndex++)
         {
             if (m_puSpatializer != nullptr)
                 m_puSpatializer->advanceSourceSmoothers();
             
             // 3D / WFS mode: push the mono source sample into the delay line.
-            // 2D mode does NOT use the delay line — getSample() reads directly
-            // from m_puAsci->buffer, so no push is needed (and m_puSpatializer
-            // is nullptr in 2D mode, so accessing it would crash).
             if (m_is3D && m_puSpatializer != nullptr &&
                 m_puAsci != nullptr && m_puAsci->buffer != nullptr &&
                 m_upReaderSource != nullptr)
@@ -505,8 +546,11 @@ namespace AT
         m_isPrefilter = isPrefilter;
     }
 
-    void SpatPlayer::setGain(float gain){
+    void SpatPlayer::setGain(float gain)
+    {
         m_gain = gain;
+        // Cache the linear equivalent so updateForNextBlock() never calls std::pow.
+        m_linearGain = std::pow(10.0f, gain / 20.0f);
     }
 
     void SpatPlayer::setPlaybackSpeed(float playbackSpeed)
@@ -574,8 +618,8 @@ namespace AT
         {
             m_puSpatializer = std::make_unique<Spatializer>(
                 *this,
-                m_numOutputChannels, 
-                m_samplesPerBlock, 
+                m_numOutputChannels,
+                m_samplesPerBlock,
                 m_sampleRate
             );
             
@@ -585,6 +629,12 @@ namespace AT
             // at any sample rate — no per-rate coefficient files are needed.
             m_wfsPrefilter.prepare(sampleRate, 50.0f, 20000.0f);
         }
+
+        // Pre-allocate gain ramp buffer for SIMD fade in 2D processAndAdd().
+        // One float per sample — never reallocated in the audio thread.
+        m_puGainRamp = std::make_unique<float[]>(samplesPerBlock);
+        
+        
     }
 
     void SpatPlayer::releaseResources()

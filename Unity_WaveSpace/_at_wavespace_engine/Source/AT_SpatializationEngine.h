@@ -306,8 +306,24 @@ namespace AT
          */
         static constexpr int MAX_VIRTUAL_SPEAKERS = 1024;
 
-        /// Maximum number of samples per audio block
-        static constexpr int MAX_SAMPLES_PER_BLOCK = 4096;
+        /**
+         * @brief Maximum audio block size (samples) accepted by the engine.
+         *
+         * This is the SINGLE authoritative constant for buffer-size constraints.
+         * It governs two things:
+         *   1. The upper clamp applied to the requested bufferSize in setup()
+         *      so the audio driver is never asked for more samples than we support.
+         *   2. The allocation size of m_transitionGainBuffer, which is sized to
+         *      the ACTUAL samplesPerBlock in prepareToPlay() and is therefore
+         *      immune to driver rounding — but setup() still rejects any request
+         *      above this limit to prevent unbounded memory growth.
+         *
+         * To raise the limit (e.g. to 8192 or 16384 for deferred-time playback),
+         * change ONLY this constant. No other value in the codebase needs editing.
+         *
+         * Default: 4096 samples (~85 ms @ 48 kHz).
+         */
+        static constexpr int MAX_SAMPLES_PER_BLOCK = 8192;
 
     private:
 
@@ -476,7 +492,20 @@ namespace AT
         bool m_isFadingToMode      = false;                   ///< True while fading out, mode switch pending
         bool m_targetModeAfterFade = false;                   ///< Target mode to apply when gain reaches 0
 
-        float m_transitionGainBuffer[MAX_SAMPLES_PER_BLOCK];  ///< Pre-allocated gain ramp buffer
+        /**
+         * @brief Per-sample gain ramp buffer for the binaural↔WFS mode crossfade.
+         *
+         * Allocated in prepareToPlay() to the ACTUAL samplesPerBlock delivered by
+         * the driver — NOT to MAX_SAMPLES_PER_BLOCK. This makes the buffer immune
+         * to driver rounding (e.g. a request for 4096 rounded up to 8192 by ASIO):
+         * prepareToPlay() always receives the true block size and allocates exactly
+         * that many floats, so getNextAudioBlock() can never write out of bounds.
+         *
+         * Previously declared as float[MAX_SAMPLES_PER_BLOCK]. That caused a crash
+         * whenever setup() was called a second time with a different buffer size,
+         * because prepareToPlay() was not resizing the array.
+         */
+        std::unique_ptr<float[]> m_transitionGainBuffer;
 
         bool m_hasPendingModeChangeDuringWarmup = false;
         bool m_pendingModeAfterWarmup = false;

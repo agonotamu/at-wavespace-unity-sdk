@@ -129,8 +129,19 @@ namespace AT
 
             if (bufferSize > 0)
             {
-                if (bufferSize < 32)   { LOG_WARNING("Buffer size " << bufferSize << " is too small, using 64");   bufferSize = 64;   }
-                if (bufferSize > 8192) { LOG_WARNING("Buffer size " << bufferSize << " is too large, using 4096"); bufferSize = 4096; }
+                if (bufferSize < 32)
+                {
+                    LOG_WARNING("Buffer size " << bufferSize << " is too small, using 64");
+                    bufferSize = 64;
+                }
+                if (bufferSize > MAX_SAMPLES_PER_BLOCK)
+                {
+                    LOG_WARNING("Buffer size " << bufferSize
+                        << " exceeds MAX_SAMPLES_PER_BLOCK (" << MAX_SAMPLES_PER_BLOCK
+                        << "), clamping. Raise MAX_SAMPLES_PER_BLOCK in AT_SpatializationEngine.h"
+                        << " to allow larger values.");
+                    bufferSize = MAX_SAMPLES_PER_BLOCK;
+                }
 
                 bool isPowerOf2 = (bufferSize & (bufferSize - 1)) == 0;
                 if (!isPowerOf2) LOG_WARNING("Buffer size " << bufferSize << " is not a power of 2, may cause issues");
@@ -470,6 +481,21 @@ namespace AT
         const int safeOutCh = std::min(m_numOutputChannels, MAX_VIRTUAL_SPEAKERS);
         for (int i = 0; i < safeOutCh; i++)
             m_metersArray[i] = -90.0f;
+
+        // ── Bug fix: force reallocation of per-player scratch buffers ────────
+        // m_playerBuffers are lazily allocated in processPlayersWFS() and only
+        // grown when numPlayers increases. They are NOT resized when samplesPerBlock
+        // changes (e.g. a second setup() call with a different buffer size), which
+        // caused an out-of-bounds write — and Unity crash — when the new block size
+        // exceeded the old allocation. Clearing here guarantees correct reallocation
+        // on the next audio callback regardless of the player count.
+        m_playerBuffers.clear();
+
+        // ── Allocate transition gain ramp buffer to the ACTUAL block size ────
+        // Previously a static float[MAX_SAMPLES_PER_BLOCK]. Now dynamic so that
+        // driver rounding (e.g. 4096 rounded up to 8192 by some ASIO devices)
+        // never causes an out-of-bounds write in getNextAudioBlock().
+        m_transitionGainBuffer = std::make_unique<float[]>(samplesPerBlock);
 
         initializeGlobalSmoothers();
 

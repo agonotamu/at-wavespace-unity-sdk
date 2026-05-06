@@ -10,4 +10,10 @@ public class At_SpatialConfigState
     public float[]  speaker_fwdx;
     public float[]  speaker_fwdy;
     public float[]  speaker_fwdz;
+
+    public int      numSourcePosition;
+    public string[] source_name;
+    public float[]  source_posx;
+    public float[]  source_posy;
+    public float[]  source_posz;
 }

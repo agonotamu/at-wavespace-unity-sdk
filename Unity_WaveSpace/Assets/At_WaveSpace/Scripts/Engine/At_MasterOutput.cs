@@ -465,6 +465,7 @@ public class At_MasterOutput : MonoBehaviour
 
     #region Gizmos
 #if UNITY_EDITOR
+    
     private void OnDrawGizmos()
     {
         At_VirtualSpeaker[] vss = FindObjectsOfType<At_VirtualSpeaker>();
