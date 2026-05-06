@@ -59,6 +59,56 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release"
       }
+    },
+    {
+      "name": "macos-console-release",
+      "displayName": "macOS Console App — Release",
+      "generator": "Xcode",
+      "binaryDir": "${sourceDir}/Builds/MacOSX_Console",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE":            "Release",
+        "CMAKE_OSX_ARCHITECTURES":     "x86_64;arm64",
+        "CMAKE_OSX_DEPLOYMENT_TARGET": "11.0",
+        "BUILD_CONSOLE_APP":           "ON"
+      }
+    },
+    {
+      "name": "macos-console-debug",
+      "displayName": "macOS Console App — Debug",
+      "generator": "Xcode",
+      "binaryDir": "${sourceDir}/Builds/MacOSX_Console",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE":            "Debug",
+        "CMAKE_OSX_ARCHITECTURES":     "x86_64;arm64",
+        "CMAKE_OSX_DEPLOYMENT_TARGET": "11.0",
+        "BUILD_CONSOLE_APP":           "ON"
+      }
+    },
+    {
+      "name": "windows-console-x64-release",
+      "displayName": "Windows Console App — x64 Release",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/Builds/VisualStudio2022_Console",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "BUILD_CONSOLE_APP": "ON"
+      }
+    },
+    {
+      "name": "windows-console-x64-debug",
+      "displayName": "Windows Console App — x64 Debug",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/Builds/VisualStudio2022_Console",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "BUILD_CONSOLE_APP": "ON"
+      }
     }
   ],
 
@@ -87,6 +137,26 @@
       "name": "windows-x86-release",
       "configurePreset": "windows-x86-release",
       "configuration": "Release"
+    },
+    {
+      "name": "macos-console-release",
+      "configurePreset": "macos-console-release",
+      "configuration": "Release"
+    },
+    {
+      "name": "macos-console-debug",
+      "configurePreset": "macos-console-debug",
+      "configuration": "Debug"
+    },
+    {
+      "name": "windows-console-x64-release",
+      "configurePreset": "windows-console-x64-release",
+      "configuration": "Release"
+    },
+    {
+      "name": "windows-console-x64-debug",
+      "configurePreset": "windows-console-x64-debug",
+      "configuration": "Debug"
     }
   ]
 }

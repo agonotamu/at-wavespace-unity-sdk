@@ -28,9 +28,9 @@ if(APPLE)
 endif()
 
 # ==============================================================================
-# Cible : bibliothèque partagée (dylib / dll)
+# Engine source files (shared between the library and the console app)
 # ==============================================================================
-add_library(at_wavespace_engine SHARED
+set(AT_ENGINE_SOURCES
     Source/PluginInterface.cpp
     Source/AT_AudioManager.cpp
     Source/AT_SpatializationEngine.cpp
@@ -41,6 +41,47 @@ add_library(at_wavespace_engine SHARED
     Source/SOFAReader.cpp
     Source/UnityLogger.cpp
 )
+
+# ==============================================================================
+# Cible : bibliothèque partagée (dylib / dll)
+# ==============================================================================
+add_library(at_wavespace_engine SHARED ${AT_ENGINE_SOURCES})
+
+# ==============================================================================
+# Headers — added for IDE visibility (Xcode / Visual Studio file navigator)
+# Not compiled, but listed so they appear in the project tree.
+# ==============================================================================
+file(GLOB AT_HEADERS CONFIGURE_DEPENDS "Source/*.h")
+file(GLOB AT_CPPS    CONFIGURE_DEPENDS "Source/*.cpp")
+
+# Build an ordered list: for each .cpp, prepend the matching .h if it exists.
+# This gives h-before-cpp ordering in IDEs that respect pbxproj/vcxproj order (Xcode).
+set(AT_SOURCES_IDE)
+foreach(_cpp ${AT_CPPS})
+    get_filename_component(_base ${_cpp} NAME_WE)
+    get_filename_component(_dir  ${_cpp} DIRECTORY)
+    set(_h "${_dir}/${_base}.h")
+    if(_h IN_LIST AT_HEADERS)
+        list(APPEND AT_SOURCES_IDE ${_h})
+    endif()
+    list(APPEND AT_SOURCES_IDE ${_cpp})
+endforeach()
+# Append any standalone headers with no matching .cpp (e.g. AT_SpatConfig.h)
+foreach(_h ${AT_HEADERS})
+    if(NOT _h IN_LIST AT_SOURCES_IDE)
+        list(APPEND AT_SOURCES_IDE ${_h})
+    endif()
+endforeach()
+
+target_sources(at_wavespace_engine PRIVATE ${AT_SOURCES_IDE})
+
+# ==============================================================================
+# Source groups — IDE virtual folder organisation
+# "AT WaveSpace" : engine .h and .cpp together, in declaration order
+# "JUCE"         : JUCE module compilation units
+# ==============================================================================
+source_group("AT WaveSpace" FILES ${AT_SOURCES_IDE})
+source_group("JUCE"         REGULAR_EXPRESSION ".*/juce_.*\\.(mm|cpp|c)$")
 
 # Génère JuceHeader.h manuellement dans le dossier de build.
 # juce_generate_juce_header ne fonctionne qu'avec juce_add_plugin/juce_add_gui_app.
@@ -78,6 +119,7 @@ target_compile_definitions(at_wavespace_engine
     PUBLIC
         JUCE_STRICT_REFCOUNTEDPOINTER=1
         JUCE_STANDALONE_APPLICATION=0
+        DISABLE_UNITY_LOGGING
         # Active ASIO sur Windows
         $<$<BOOL:${WIN32}>:JUCE_ASIO=1>
 )
@@ -228,3 +270,74 @@ if(APPLE)
 endif()
 message(STATUS "  Unity output   : ${UNITY_OUTPUT}")
 message(STATUS "------------------------------------------------------------")
+
+# ==============================================================================
+# Console Application (optional — enable with -DBUILD_CONSOLE_APP=ON)
+# or via the dedicated CMake presets (macos-console-release, etc.)
+# ==============================================================================
+option(BUILD_CONSOLE_APP "Build the standalone console test application" OFF)
+
+if(BUILD_CONSOLE_APP)
+
+    add_executable(TestAppConsole
+        ${AT_ENGINE_SOURCES}
+        Source/Main.cpp
+    )
+
+    # IDE sources: reuse the ordered h/cpp list, add Main.cpp at the top
+    set(CONSOLE_SOURCES_IDE ${AT_SOURCES_IDE})
+    set(_main "${CMAKE_CURRENT_SOURCE_DIR}/Source/Main.cpp")
+    list(PREPEND CONSOLE_SOURCES_IDE ${_main})
+
+    target_sources(TestAppConsole PRIVATE ${CONSOLE_SOURCES_IDE})
+    source_group("AT WaveSpace" FILES ${CONSOLE_SOURCES_IDE})
+    source_group("JUCE"         REGULAR_EXPRESSION ".*/juce_.*\\.(mm|cpp|c)$")
+
+    # AT_SPAT_CONSOLE_APP disables async device scanning (requires message loop)
+    target_compile_definitions(TestAppConsole
+        PRIVATE
+            AT_SPAT_CONSOLE_APP
+            DISABLE_UNITY_LOGGING
+            JUCE_STRICT_REFCOUNTEDPOINTER=1
+            JUCE_STANDALONE_APPLICATION=1
+            $<$<BOOL:${WIN32}>:JUCE_ASIO=1>
+    )
+
+    target_compile_features(TestAppConsole PRIVATE cxx_std_17)
+    target_include_directories(TestAppConsole PRIVATE "${JUCE_HEADER_DIR}")
+
+    if(WIN32)
+        target_include_directories(TestAppConsole PRIVATE
+            "C:/JUCE/modules/juce_audio_devices/native/ASIOSDK/common"
+            "C:/JUCE/modules/juce_audio_devices/native/ASIOSDK/host"
+            "C:/JUCE/modules/juce_audio_devices/native/ASIOSDK"
+        )
+    endif()
+
+    target_link_libraries(TestAppConsole
+        PRIVATE
+            juce::juce_audio_basics
+            juce::juce_audio_devices
+            juce::juce_audio_formats
+            juce::juce_audio_processors
+            juce::juce_audio_processors_headless
+            juce::juce_audio_utils
+            juce::juce_core
+            juce::juce_data_structures
+            juce::juce_dsp
+            juce::juce_events
+            juce::juce_graphics
+            juce::juce_gui_basics
+            juce::juce_gui_extra
+        PUBLIC
+            juce::juce_recommended_config_flags
+            juce::juce_recommended_warning_flags
+    )
+
+    set_target_properties(TestAppConsole PROPERTIES
+        OUTPUT_NAME "TestAppConsole"
+    )
+
+    message(STATUS "  Console app    : ON (TestAppConsole)")
+
+endif()
