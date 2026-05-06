@@ -333,6 +333,10 @@ Available presets (platform-filtered automatically):
 | `windows-x64-release` | Windows | Visual Studio 17 2022 | Release x64 |
 | `windows-x64-debug` | Windows | Visual Studio 17 2022 | Debug x64 |
 | `windows-x86-release` | Windows | Visual Studio 17 2022 | Release Win32 |
+| `macos-console-release` | macOS | Xcode | Console app — Release |
+| `macos-console-debug` | macOS | Xcode | Console app — Debug |
+| `windows-console-x64-release` | Windows | Visual Studio 17 2022 | Console app — Release x64 |
+| `windows-console-x64-debug` | Windows | Visual Studio 17 2022 | Console app — Debug x64 |
 
 #### 3. Generate the IDE project
 
@@ -398,15 +402,25 @@ Switch back to Unity and click anywhere in the Project window to trigger an asse
 
 A standalone **console test application** is also included for validating the DSP core without Unity.
 
-Open `_at_wavespace_engine/_at_wavespace_consoleApp.jucer` in Projucer (or use the corresponding CMake target) and follow the same build steps as above. The console app initialises the `AudioDeviceManager` directly and is useful for offline corpus generation, calibration, and audio routing diagnostics.
+The `AT_SPAT_CONSOLE_APP` define — which disables async device scanning (unavailable without a JUCE message loop) — is already set in the Projucer `extraDefs` and in the dedicated CMake presets. No manual edit of `AT_SpatConfig.h` is needed.
 
-Before building, uncomment the following line in `AT_SpatConfig.h`:
+**Projucer** — open `_at_wavespace_engine/_at_wavespace_consoleApp.jucer` and build as usual. The generated project is placed in a separate folder to avoid conflicts with the library build:
+- **macOS →** `Builds/MacOSX_Console/`
+- **Windows →** `Builds/VisualStudio2022_Console/`
 
-```cpp
-#define AT_SPAT_CONSOLE_APP
+**CMake** — use the dedicated console presets:
+
+```bash
+# macOS
+cmake --preset macos-console-release
+cmake --build --preset macos-console-release
+
+# Windows
+cmake --preset windows-console-x64-release
+cmake --build --preset windows-console-x64-release
 ```
 
-This disables async device scanning, which requires a running JUCE message loop and is not available in a headless console context.
+The generated projects land in `Builds/MacOSX_Console/` and `Builds/VisualStudio2022_Console/` respectively, consistent with the Projucer layout.
 
 > **Note (macOS / Windows):** Console apps built with JUCE require a `ScopedJuceInitialiser_GUI` to be instantiated first in `main()`, even when running headlessly.
 
@@ -414,15 +428,13 @@ This disables async device scanning, which requires a running JUCE message loop 
 
 ## Unity Debug Logging
 
-The engine includes a logging system that forwards native messages to the Unity Console. It is **disabled by default** for performance reasons.
+The engine includes a logging system that forwards native messages to the Unity Console. It is **disabled by default** for performance reasons via the `DISABLE_UNITY_LOGGING` define, which is set in both the Projucer `extraDefs` and the CMake `target_compile_definitions`.
 
-To enable it, comment out the following line in `AT_SpatConfig.h`:
+To enable logging, remove `DISABLE_UNITY_LOGGING` from the appropriate build system:
+- **Projucer:** delete `DISABLE_UNITY_LOGGING` from the `extraDefs` field of the Xcode or VS2022 exporter in `_at_wavespace_engine.jucer`.
+- **CMake:** remove `DISABLE_UNITY_LOGGING` from `target_compile_definitions(at_wavespace_engine ...)` in `CMakeLists.txt`.
 
-```cpp
-// #define DISABLE_UNITY_LOGGING
-```
-
-> ⚠️ **Performance warning:** Unity logging involves a callback from the audio thread into managed C# code. Even at low verbosity, this can introduce **significant latency spikes and audio underruns**, especially at small buffer sizes. **Never leave logging enabled in production.** Re-enable `DISABLE_UNITY_LOGGING` as soon as debugging is complete.
+> ⚠️ **Performance warning:** Unity logging involves a callback from the audio thread into managed C# code. Even at low verbosity, this can introduce **significant latency spikes and audio underruns**, especially at small buffer sizes. **Never leave logging enabled in production or during perceptual evaluation.**
 
 ---
 
