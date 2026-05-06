@@ -8,23 +8,15 @@
 #pragma once
 
 // ============================================================================
-// CONSOLE APPLICATION MODE
-// Defined externally — do not set here.
-//   CMake   : cmake --preset macos-console-release  (BUILD_CONSOLE_APP=ON)
-//   Projucer: add AT_SPAT_CONSOLE_APP to extraDefs in the console app exporter
-// Disables async device scanning, which requires a running JUCE message loop.
-// ============================================================================
-// AT_SPAT_CONSOLE_APP
-
-// ============================================================================
 // UNITY DEBUG LOGGING
-// Defined externally — do not set here.
-//   CMake   : remove DISABLE_UNITY_LOGGING from target_compile_definitions
-//   Projucer: remove DISABLE_UNITY_LOGGING from the exporter extraDefs
+// ============================================================================
+// Comment out to enable native → Unity Console logging.
+// Can also be controlled via Projucer extraDefs or CMake target_compile_definitions
+// without editing this file.
 // WARNING: logging from the audio thread into managed C# code causes significant
 // latency spikes and audio underruns. Never enable in production.
-// ============================================================================
-// DISABLE_UNITY_LOGGING
+
+#define DISABLE_UNITY_LOGGING
 
 // ============================================================================
 // MULTITHREADED PLAYER PROCESSING

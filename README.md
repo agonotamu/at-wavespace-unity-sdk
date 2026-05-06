@@ -428,11 +428,14 @@ The generated projects land in `Builds/MacOSX_Console/` and `Builds/VisualStudio
 
 ## Unity Debug Logging
 
-The engine includes a logging system that forwards native messages to the Unity Console. It is **disabled by default** for performance reasons via the `DISABLE_UNITY_LOGGING` define, which is set in both the Projucer `extraDefs` and the CMake `target_compile_definitions`.
+The engine includes a logging system that forwards native messages to the Unity Console. It is **disabled by default** for performance reasons via the `DISABLE_UNITY_LOGGING` define.
 
-To enable logging, remove `DISABLE_UNITY_LOGGING` from the appropriate build system:
+To enable logging, use one of the following three approaches:
 - **Projucer:** delete `DISABLE_UNITY_LOGGING` from the `extraDefs` field of the Xcode or VS2022 exporter in `_at_wavespace_engine.jucer`.
 - **CMake:** remove `DISABLE_UNITY_LOGGING` from `target_compile_definitions(at_wavespace_engine ...)` in `CMakeLists.txt`.
+- **AT_SpatConfig.h:** comment out the `#define DISABLE_UNITY_LOGGING` line directly in the header. This takes effect regardless of the build system used.
+
+> ⚠️ **Performance warning:** Unity logging involves a callback from the audio thread into managed C# code. Even at low verbosity, this can introduce **significant latency spikes and audio underruns**, especially at small buffer sizes. **Never leave logging enabled in production or during perceptual evaluation.**
 
 > ⚠️ **Performance warning:** Unity logging involves a callback from the audio thread into managed C# code. Even at low verbosity, this can introduce **significant latency spikes and audio underruns**, especially at small buffer sizes. **Never leave logging enabled in production or during perceptual evaluation.**
 
