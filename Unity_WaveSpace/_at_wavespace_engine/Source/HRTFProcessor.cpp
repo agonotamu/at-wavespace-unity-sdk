@@ -1,433 +1,237 @@
 #include "HRTFProcessor.h"
-#include "AT_SpatConfig.h"
+#include <cstring>
+#include <algorithm>
 
-HRTFProcessor::HRTFProcessor()
-    : currentSampleRate(44100.0)
-    , maxBlockSize(512)
-    , targetDistance(1.0f)
-    // leftConvolver and rightConvolver are value members — default-constructed,
-    // no heap allocation needed here. Previously two make_unique<Convolution>()
-    // calls were placed here, each causing a heap allocation.
-{
-    currentAzimuth.store(0.0f);
-    currentElevation.store(0.0f);
-    currentDistance.store(1.0f);
-    needsUpdate.store(true);
-    
-    // NOTE: leftConvolver and rightConvolver are now direct members,
-    // initialised by their default constructors above — no code needed here.
-}
+// ────────────────────────────────────────────────────────────────────────────
+// LIFECYCLE
+// ────────────────────────────────────────────────────────────────────────────
 
-HRTFProcessor::~HRTFProcessor()
-{
-    // Reset convolution state before destruction to cleanly release FFT resources.
-    // With value members, the objects will be destroyed automatically afterward.
-    leftConvolver.reset();
-    rightConvolver.reset();
-}
+HRTFProcessor::HRTFProcessor() = default;
 
 void HRTFProcessor::prepare(double sampleRate, int samplesPerBlock)
 {
-    currentSampleRate = sampleRate;
-    maxBlockSize = samplesPerBlock;
-    
-    juce::dsp::ProcessSpec spec;
-    spec.sampleRate       = sampleRate;
-    spec.maximumBlockSize = static_cast<juce::uint32>(samplesPerBlock);
-    spec.numChannels      = 1;
-    
-    // Value members — access with . instead of ->
-    leftConvolver.prepare(spec);
-    rightConvolver.prepare(spec);
-    
-    // Pre-allocate buffers to maximum size (no allocations in audio thread)
-    monoBuffer.setSize(1, samplesPerBlock, false, true, false);
-    tempLeftBuffer.setSize(1, samplesPerBlock, false, true, false);
-    tempRightBuffer.setSize(1, samplesPerBlock, false, true, false);
-    
-    monoBuffer.clear();
-    tempLeftBuffer.clear();
-    tempRightBuffer.clear();
-    
-    if (!sofaReader.isLoaded())
+    m_sampleRate   = sampleRate;
+    m_maxBlockSize = samplesPerBlock;
+
+    if (m_table && m_table->isFFTPrepared())
     {
-        sofaReader.createDefaultHRTF();
-        updateIRs();
+        const int fftSize = m_table->getFFTSize();
+        const int bufSize = 2 * fftSize;   // JUCE FFT uses 2×N for complex pairs
+
+        m_workBufIn .assign(bufSize, 0.0f);
+        m_workBufL  .assign(bufSize, 0.0f);
+        m_workBufR  .assign(bufSize, 0.0f);
+        m_workBufOldL.assign(bufSize, 0.0f);
+        m_workBufOldR.assign(bufSize, 0.0f);
+        m_overlapL  .assign(fftSize, 0.0f);
+        m_overlapR  .assign(fftSize, 0.0f);
     }
 }
 
 void HRTFProcessor::reset()
 {
-    leftConvolver.reset();
-    rightConvolver.reset();
-    
-    monoBuffer.clear();
-    tempLeftBuffer.clear();
-    tempRightBuffer.clear();
+    std::fill(m_overlapL.begin(),    m_overlapL.end(),    0.0f);
+    std::fill(m_overlapR.begin(),    m_overlapR.end(),    0.0f);
+    std::fill(m_workBufIn.begin(),   m_workBufIn.end(),   0.0f);
+    std::fill(m_workBufL.begin(),    m_workBufL.end(),    0.0f);
+    std::fill(m_workBufR.begin(),    m_workBufR.end(),    0.0f);
+    std::fill(m_workBufOldL.begin(), m_workBufOldL.end(), 0.0f);
+    std::fill(m_workBufOldR.begin(), m_workBufOldR.end(), 0.0f);
 }
 
-bool HRTFProcessor::loadHRTF(const juce::File& sofaFile)
+void HRTFProcessor::setHRTFTable(const HRTFTable* table)
 {
-    bool success = sofaReader.loadFile(sofaFile);
-    
-    if (success)
-    {
-        needsUpdate.store(true);
-        updateIRs();
-    }
-    
-    return success;
-}
+    m_table        = table;
+    m_currentIndex = 0;
 
-bool HRTFProcessor::loadHRTFFromFile(const std::string& filePath)
-{
-    juce::File hrtfFile(filePath);
-    return loadHRTF(hrtfFile);
-}
-
-bool HRTFProcessor::loadDefaultHRTF()
-{
-    sofaReader.createDefaultHRTF();
-    needsUpdate.store(true);
-    updateIRs();
-    return true;
-}
-
-void HRTFProcessor::loadHRTFFromSharedReader(const SOFAReader& sharedReader)
-{
-    // In-memory copy — no file I/O, no FFT re-init.
-    // SOFAReader contains only standard vectors and scalars,
-    // so the compiler-generated copy assignment is correct and complete.
-    sofaReader = sharedReader;
-    needsUpdate.store(true);
-    updateIRs();
-}
-
-void HRTFProcessor::updateIRs()
-{
-    if (!sofaReader.isLoaded())
-        return;
-
-    float azimuth   = currentAzimuth.load();
-    float elevation = currentElevation.load();
-    float distance  = currentDistance.load();
-
-    // Fix E layer 1: index guard — reload only when the nearest SOFA measurement
-    // index actually changes. Between grid points the same IR is optimal.
-    int newIndex = sofaReader.hasDistanceInfo()
-                    ? sofaReader.getNearestPositionIndexWithDistance(azimuth, elevation, distance)
-                    : sofaReader.getNearestPositionIndex(azimuth, elevation);
-
-    m_pendingIRIndex = newIndex;
-
-    // Fix E layer 2: cooldown — after each loadImpulseResponse(), block further
-    // reloads for IR_RELOAD_COOLDOWN_BLOCKS blocks so the JUCE crossfade never piles up.
-    if (m_irReloadCooldown > 0)
-    {
-        --m_irReloadCooldown;
-        if (m_irReloadCooldown == 0 && m_pendingIRIndex != m_lastIRIndex)
-            ; // fall through to load below
-        else
-        {
-            needsUpdate.store(false);
-            return;
-        }
-    }
-
-    if (m_pendingIRIndex == m_lastIRIndex)
-    {
-        needsUpdate.store(false);
-        return;
-    }
-
-    std::vector<float> leftIR, rightIR;
-    bool success;
-    if (sofaReader.hasDistanceInfo())
-        success = sofaReader.getIRsForPositionWithDistance(azimuth, elevation, distance, leftIR, rightIR);
+    if (m_maxBlockSize > 0 && table && table->isFFTPrepared())
+        prepare(m_sampleRate, m_maxBlockSize);
     else
-        success = sofaReader.getIRsForPosition(azimuth, elevation, leftIR, rightIR);
-
-    if (success)
-    {
-        int irLength = static_cast<int>(leftIR.size());
-
-        double hrtfSampleRate = static_cast<double>(sofaReader.getSampleRate());
-        bool needsResampling  = std::abs(hrtfSampleRate - currentSampleRate) > 0.1;
-
-        if (needsResampling)
-        {
-            double ratio   = currentSampleRate / hrtfSampleRate;
-            int newLength  = static_cast<int>(std::ceil(irLength * ratio));
-            std::vector<float> resampledLeft(newLength);
-            std::vector<float> resampledRight(newLength);
-            resampleIR(leftIR,  resampledLeft,  ratio);
-            resampleIR(rightIR, resampledRight, ratio);
-            leftIR   = resampledLeft;
-            rightIR  = resampledRight;
-            irLength = newLength;
-        }
-
-        // Truncate IR to m_maxIRLength if a limit is set (0 = no limit).
-        if (m_maxIRLength > 0 && irLength > m_maxIRLength)
-            irLength = m_maxIRLength;
-
-        juce::AudioBuffer<float> tempLeftIR(1, irLength);
-        juce::AudioBuffer<float> tempRightIR(1, irLength);
-        juce::FloatVectorOperations::copy(tempLeftIR.getWritePointer(0),  leftIR.data(),  irLength);
-        juce::FloatVectorOperations::copy(tempRightIR.getWritePointer(0), rightIR.data(), irLength);
-
-        leftConvolver.loadImpulseResponse(std::move(tempLeftIR),
-                                          currentSampleRate,
-                                          juce::dsp::Convolution::Stereo::no,
-                                          juce::dsp::Convolution::Trim::no,
-                                          juce::dsp::Convolution::Normalise::no);
-
-        rightConvolver.loadImpulseResponse(std::move(tempRightIR),
-                                           currentSampleRate,
-                                           juce::dsp::Convolution::Stereo::no,
-                                           juce::dsp::Convolution::Trim::no,
-                                           juce::dsp::Convolution::Normalise::no);
-
-        m_lastIRIndex      = m_pendingIRIndex;
-        m_irReloadCooldown = IR_RELOAD_COOLDOWN_BLOCKS;
-        needsUpdate.store(false);
-    }
-}
-
-void HRTFProcessor::resampleIR(const std::vector<float>& input, std::vector<float>& output, double ratio)
-{
-    int inputLength  = static_cast<int>(input.size());
-    int outputLength = static_cast<int>(output.size());
-    
-    for (int i = 0; i < outputLength; ++i)
-    {
-        double srcPos  = static_cast<double>(i) / ratio;
-        int srcIndex   = static_cast<int>(srcPos);
-        double frac    = srcPos - srcIndex;
-        
-        if (srcIndex < inputLength - 1)
-            output[i] = static_cast<float>((1.0 - frac) * input[srcIndex] + frac * input[srcIndex + 1]);
-        else if (srcIndex < inputLength)
-            output[i] = input[srcIndex];
-        else
-            output[i] = 0.0f;
-    }
-}
-
-void HRTFProcessor::process(juce::AudioBuffer<float>& buffer, float azimuth, float elevation)
-{
-    const int numSamples  = buffer.getNumSamples();
-    const int numChannels = buffer.getNumChannels();
-    
-    if (numSamples == 0 || !sofaReader.isLoaded())
-        return;
-    
-    float currentAz = currentAzimuth.load();
-    float currentEl = currentElevation.load();
-    
-    if (std::abs(azimuth - currentAz) > 0.5f || std::abs(elevation - currentEl) > 0.5f)
-    {
-        currentAzimuth.store(azimuth);
-        currentElevation.store(elevation);
-        updateIRs();
-    }
-    
-    monoBuffer.clear();
-    
-    if (numChannels >= 1)
-        juce::FloatVectorOperations::copy(monoBuffer.getWritePointer(0),
-                                          buffer.getReadPointer(0), numSamples);
-    
-    tempLeftBuffer.clear();
-    tempRightBuffer.clear();
-    juce::FloatVectorOperations::copy(tempLeftBuffer.getWritePointer(0),
-                                      monoBuffer.getReadPointer(0), numSamples);
-    juce::FloatVectorOperations::copy(tempRightBuffer.getWritePointer(0),
-                                      monoBuffer.getReadPointer(0), numSamples);
-    
-    juce::dsp::AudioBlock<float> leftBlock(tempLeftBuffer.getArrayOfWritePointers(),   1, numSamples);
-    juce::dsp::AudioBlock<float> rightBlock(tempRightBuffer.getArrayOfWritePointers(), 1, numSamples);
-    juce::dsp::ProcessContextReplacing<float> leftContext(leftBlock);
-    juce::dsp::ProcessContextReplacing<float> rightContext(rightBlock);
-    
-    leftConvolver.process(leftContext);
-    rightConvolver.process(rightContext);
-    
-    buffer.clear();
-    
-    if (numChannels >= 2)
-    {
-        juce::FloatVectorOperations::copy(buffer.getWritePointer(0),
-                                          tempLeftBuffer.getReadPointer(0),  numSamples);
-        juce::FloatVectorOperations::copy(buffer.getWritePointer(1),
-                                          tempRightBuffer.getReadPointer(0), numSamples);
-    }
-    else if (numChannels == 1)
-    {
-        juce::FloatVectorOperations::copy(buffer.getWritePointer(0),
-                                          tempLeftBuffer.getReadPointer(0), numSamples);
-        juce::FloatVectorOperations::multiply(buffer.getWritePointer(0), 0.5f, numSamples);
-        juce::FloatVectorOperations::addWithMultiply(buffer.getWritePointer(0),
-                                                     tempRightBuffer.getReadPointer(0),
-                                                     0.5f, numSamples);
-    }
-}
-
-void HRTFProcessor::process(juce::AudioBuffer<float>& buffer, float azimuth, float elevation, float distance)
-{
-    const int numSamples  = buffer.getNumSamples();
-    const int numChannels = buffer.getNumChannels();
-    
-    if (numSamples == 0 || !sofaReader.isLoaded())
-        return;
-    
-    float currentAz   = currentAzimuth.load();
-    float currentEl   = currentElevation.load();
-    float currentDist = currentDistance.load();
-    
-    bool needsNewIRs = (std::abs(azimuth   - currentAz)   > 0.5f) ||
-                       (std::abs(elevation - currentEl)   > 0.5f) ||
-                       (sofaReader.hasDistanceInfo() && std::abs(distance - currentDist) > 0.05f);
-    
-    if (needsNewIRs)
-    {
-        currentAzimuth.store(azimuth);
-        currentElevation.store(elevation);
-        currentDistance.store(distance);
-        updateIRs();
-    }
-    
-    monoBuffer.clear();
-    
-    if (numChannels >= 1)
-        juce::FloatVectorOperations::copy(monoBuffer.getWritePointer(0),
-                                          buffer.getReadPointer(0), numSamples);
-    
-    tempLeftBuffer.clear();
-    tempRightBuffer.clear();
-    juce::FloatVectorOperations::copy(tempLeftBuffer.getWritePointer(0),
-                                      monoBuffer.getReadPointer(0), numSamples);
-    juce::FloatVectorOperations::copy(tempRightBuffer.getWritePointer(0),
-                                      monoBuffer.getReadPointer(0), numSamples);
-    
-    juce::dsp::AudioBlock<float> leftBlock(tempLeftBuffer.getArrayOfWritePointers(),   1, numSamples);
-    juce::dsp::AudioBlock<float> rightBlock(tempRightBuffer.getArrayOfWritePointers(), 1, numSamples);
-    juce::dsp::ProcessContextReplacing<float> leftContext(leftBlock);
-    juce::dsp::ProcessContextReplacing<float> rightContext(rightBlock);
-    
-    leftConvolver.process(leftContext);
-    rightConvolver.process(rightContext);
-    
-    buffer.clear();
-    
-    if (numChannels >= 2)
-    {
-        juce::FloatVectorOperations::copy(buffer.getWritePointer(0),
-                                          tempLeftBuffer.getReadPointer(0),  numSamples);
-        juce::FloatVectorOperations::copy(buffer.getWritePointer(1),
-                                          tempRightBuffer.getReadPointer(0), numSamples);
-    }
-    else if (numChannels == 1)
-    {
-        juce::FloatVectorOperations::copy(buffer.getWritePointer(0),
-                                          tempLeftBuffer.getReadPointer(0), numSamples);
-        juce::FloatVectorOperations::multiply(buffer.getWritePointer(0), 0.5f, numSamples);
-        juce::FloatVectorOperations::addWithMultiply(buffer.getWritePointer(0),
-                                                     tempRightBuffer.getReadPointer(0),
-                                                     0.5f, numSamples);
-    }
-}   
-
-void HRTFProcessor::processAndAccumulate(juce::AudioBuffer<float>& outputBuffer,
-                                         const juce::AudioBuffer<float>& sourceBuffer,
-                                         int sourceChannel, int numSamples,
-                                         float azimuth, float elevation)
-{
-    if (numSamples == 0 || !sofaReader.isLoaded())
-        return;
-    
-    const int numSourceChannels = sourceBuffer.getNumChannels();
-    const int numOutputChannels = outputBuffer.getNumChannels();
-    
-    if (sourceChannel >= numSourceChannels || numOutputChannels < 2)
-        return;
-    
-    // Always update and call updateIRs(). The old 0.5° threshold is incompatible
-    // with the azimuth smoother in SpatializationEngine: per-block deltas are ~0.03°
-    // so the threshold would never fire. updateIRs() is guarded by m_lastIRIndex
-    // and only calls loadImpulseResponse() when the nearest SOFA bin changes.
-    currentAzimuth.store(azimuth);
-    currentElevation.store(elevation);
-    updateIRs();
-    
-    juce::FloatVectorOperations::copy(monoBuffer.getWritePointer(0),
-                                      sourceBuffer.getReadPointer(sourceChannel), numSamples);
-    
-    juce::FloatVectorOperations::copy(tempLeftBuffer.getWritePointer(0),
-                                      monoBuffer.getReadPointer(0), numSamples);
-    juce::FloatVectorOperations::copy(tempRightBuffer.getWritePointer(0),
-                                      monoBuffer.getReadPointer(0), numSamples);
-    
-    juce::dsp::AudioBlock<float> leftBlock(tempLeftBuffer.getArrayOfWritePointers(),   1, numSamples);
-    juce::dsp::AudioBlock<float> rightBlock(tempRightBuffer.getArrayOfWritePointers(), 1, numSamples);
-    juce::dsp::ProcessContextReplacing<float> leftContext(leftBlock);
-    juce::dsp::ProcessContextReplacing<float> rightContext(rightBlock);
-    
-    leftConvolver.process(leftContext);
-    rightConvolver.process(rightContext);
-    
-    juce::FloatVectorOperations::add(outputBuffer.getWritePointer(0),
-                                     tempLeftBuffer.getReadPointer(0),  numSamples);
-    juce::FloatVectorOperations::add(outputBuffer.getWritePointer(1),
-                                     tempRightBuffer.getReadPointer(0), numSamples);
-}
-
-void HRTFProcessor::processAndAccumulate(juce::AudioBuffer<float>& outputBuffer,
-                                         const juce::AudioBuffer<float>& sourceBuffer,
-                                         int sourceChannel, int numSamples,
-                                         float azimuth, float elevation, float distance)
-{
-    if (numSamples == 0 || !sofaReader.isLoaded())
-        return;
-    
-    const int numSourceChannels = sourceBuffer.getNumChannels();
-    const int numOutputChannels = outputBuffer.getNumChannels();
-    
-    if (sourceChannel >= numSourceChannels || numOutputChannels < 2)
-        return;
-    
-    // Same reasoning as the no-distance overload: remove the threshold.
-    currentAzimuth.store(azimuth);
-    currentElevation.store(elevation);
-    currentDistance.store(distance);
-    updateIRs();
-    
-    juce::FloatVectorOperations::copy(monoBuffer.getWritePointer(0),
-                                      sourceBuffer.getReadPointer(sourceChannel), numSamples);
-    
-    juce::FloatVectorOperations::copy(tempLeftBuffer.getWritePointer(0),
-                                      monoBuffer.getReadPointer(0), numSamples);
-    juce::FloatVectorOperations::copy(tempRightBuffer.getWritePointer(0),
-                                      monoBuffer.getReadPointer(0), numSamples);
-    
-    juce::dsp::AudioBlock<float> leftBlock(tempLeftBuffer.getArrayOfWritePointers(),   1, numSamples);
-    juce::dsp::AudioBlock<float> rightBlock(tempRightBuffer.getArrayOfWritePointers(), 1, numSamples);
-    juce::dsp::ProcessContextReplacing<float> leftContext(leftBlock);
-    juce::dsp::ProcessContextReplacing<float> rightContext(rightBlock);
-    
-    leftConvolver.process(leftContext);
-    rightConvolver.process(rightContext);
-    
-    juce::FloatVectorOperations::add(outputBuffer.getWritePointer(0),
-                                     tempLeftBuffer.getReadPointer(0),  numSamples);
-    juce::FloatVectorOperations::add(outputBuffer.getWritePointer(1),
-                                     tempRightBuffer.getReadPointer(0), numSamples);
+        reset();
 }
 
 void HRTFProcessor::preloadIR(float azimuth, float elevation)
 {
-    currentAzimuth.store(azimuth);
-    currentElevation.store(elevation);
-    if (sofaReader.isLoaded())
-        updateIRs();  // triggers loadImpulseResponse() asynchronously
+    if (!m_table || !m_table->isFFTPrepared()) return;
+    m_currentIndex = m_table->getNearestIndex(azimuth, elevation);
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// CORE OLA
+// ────────────────────────────────────────────────────────────────────────────
+
+void HRTFProcessor::complexMultiply(float* io, const float* h, int fftSize) noexcept
+{
+    // io and h: 2*fftSize floats, JUCE interleaved format [re0,im0, re1,im1, …]
+    // Compiler will auto-vectorise (NEON/AVX) with -O2.
+    for (int k = 0; k < fftSize; ++k)
+    {
+        const float xRe = io[2 * k];
+        const float xIm = io[2 * k + 1];
+        const float hRe = h [2 * k];
+        const float hIm = h [2 * k + 1];
+        io[2 * k]     = xRe * hRe - xIm * hIm;
+        io[2 * k + 1] = xRe * hIm + xIm * hRe;
+    }
+}
+
+void HRTFProcessor::olaBlock(float*       outL,
+                               float*       outR,
+                               const float* src,
+                               int          numSamples,
+                               float        azimuth,
+                               float        elevation,
+                               bool         accumulate)
+{
+    if (!m_table || !m_table->isFFTPrepared()) return;
+    if (m_workBufIn.empty()) return;
+
+    const int   fftSize    = m_table->getFFTSize();
+    const int   M          = m_table->getIRLength();
+    const auto& fft        = m_table->getFFT();
+    const int   overlapLen = M - 1;
+
+    // ── Step 1 : forward FFT of zero-padded input ────────────────────────────
+    std::fill(m_workBufIn.begin(), m_workBufIn.end(), 0.0f);
+    std::memcpy(m_workBufIn.data(), src, static_cast<size_t>(numSamples) * sizeof(float));
+    fft.performRealOnlyForwardTransform(m_workBufIn.data());
+
+    // ── Step 2 : frequency-domain HRTF interpolation ─────────────────────────
+    //
+    // Find the two SOFA bins bracketing the current azimuth and blend their FFTs:
+    //   H_blend[k] = (1 - α) × H_lower[k] + α × H_upper[k]
+    //
+    // The filter changes continuously every block → no discrete bin switch → no clicks.
+    // m_workBufOldL/R are scratch buffers for H_blend (pre-allocated in prepare()).
+
+    int   idxLower, idxUpper;
+    float alpha;
+    m_table->findBracketingIndices(azimuth, elevation, idxLower, idxUpper, alpha);
+
+    const float* hL_lo = m_table->getFFT_L(idxLower);
+    const float* hL_hi = m_table->getFFT_L(idxUpper);
+    const float* hR_lo = m_table->getFFT_R(idxLower);
+    const float* hR_hi = m_table->getFFT_R(idxUpper);
+    const float  oneMinusAlpha = 1.0f - alpha;
+    const int    bufSize = 2 * fftSize;
+
+    float* hBlendL = m_workBufOldL.data();
+    float* hBlendR = m_workBufOldR.data();
+
+    // LERP complex IR FFTs — auto-vectorised to NEON/AVX with -O2
+    for (int k = 0; k < bufSize; ++k)
+    {
+        hBlendL[k] = oneMinusAlpha * hL_lo[k] + alpha * hL_hi[k];
+        hBlendR[k] = oneMinusAlpha * hR_lo[k] + alpha * hR_hi[k];
+    }
+
+    // ── Step 3 : X × H_blend → IFFT ─────────────────────────────────────────
+    std::memcpy(m_workBufL.data(), m_workBufIn.data(), bufSize * sizeof(float));
+    complexMultiply(m_workBufL.data(), hBlendL, fftSize);
+    fft.performRealOnlyInverseTransform(m_workBufL.data());
+
+    std::memcpy(m_workBufR.data(), m_workBufIn.data(), bufSize * sizeof(float));
+    complexMultiply(m_workBufR.data(), hBlendR, fftSize);
+    fft.performRealOnlyInverseTransform(m_workBufR.data());
+
+    // ── Step 4 : overlap-add output ──────────────────────────────────────────
+    if (accumulate)
+    {
+        for (int n = 0; n < numSamples; ++n)
+        {
+            outL[n] += m_workBufL[n] + m_overlapL[n];
+            outR[n] += m_workBufR[n] + m_overlapR[n];
+        }
+    }
+    else
+    {
+        for (int n = 0; n < numSamples; ++n)
+        {
+            outL[n] = m_workBufL[n] + m_overlapL[n];
+            outR[n] = m_workBufR[n] + m_overlapR[n];
+        }
+    }
+
+    // ── Step 5 : save overlap tail for next block ─────────────────────────────
+    if (overlapLen > 0)
+    {
+        std::memcpy(m_overlapL.data(), m_workBufL.data() + numSamples,
+                    static_cast<size_t>(overlapLen) * sizeof(float));
+        std::memcpy(m_overlapR.data(), m_workBufR.data() + numSamples,
+                    static_cast<size_t>(overlapLen) * sizeof(float));
+    }
+}
+
+void HRTFProcessor::processAndAccumulate(juce::AudioBuffer<float>& outputBuffer,
+                                          const juce::AudioBuffer<float>& sourceBuffer,
+                                          int sourceChannel, int numSamples,
+                                          float azimuth, float elevation)
+{
+    if (!m_table || !m_table->isFFTPrepared()) return;
+    if (sourceChannel >= sourceBuffer.getNumChannels()) return;
+    if (outputBuffer.getNumChannels() < 2) return;
+    if (numSamples <= 0) return;
+
+    // Update nearest index for debugging / preloadIR coherence
+    m_currentIndex = m_table->getNearestIndex(azimuth, elevation);
+
+    olaBlock(outputBuffer.getWritePointer(0),
+             outputBuffer.getWritePointer(1),
+             sourceBuffer.getReadPointer(sourceChannel),
+             numSamples,
+             azimuth, elevation,
+             /*accumulate=*/true);
+}
+
+void HRTFProcessor::processAndAccumulate(juce::AudioBuffer<float>& outputBuffer,
+                                          const juce::AudioBuffer<float>& sourceBuffer,
+                                          int sourceChannel, int numSamples,
+                                          float azimuth, float elevation,
+                                          float /*distance*/)
+{
+    processAndAccumulate(outputBuffer, sourceBuffer,
+                         sourceChannel, numSamples, azimuth, elevation);
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// process  (simple binaural path — in-place)
+// ────────────────────────────────────────────────────────────────────────────
+
+void HRTFProcessor::process(juce::AudioBuffer<float>& buffer,
+                              float azimuth, float elevation)
+{
+    const int numSamples = buffer.getNumSamples();
+    if (!m_table || !m_table->isFFTPrepared() || numSamples <= 0) return;
+    if (buffer.getNumChannels() < 1) return;
+
+    m_azimuth.store(azimuth);
+    m_elevation.store(elevation);
+    m_currentIndex = m_table->getNearestIndex(azimuth, elevation);
+
+    // Channel 0 is both source and dest → use a local copy for the input.
+    // m_workBufIn is large enough (allocated in prepare).
+    const float* src = buffer.getReadPointer(0);
+
+    // Temporary: borrow m_workBufIn storage for the copy
+    // (it will be overwritten in olaBlock anyway)
+    std::vector<float> srcCopy(src, src + numSamples);
+
+    // Zero output before accumulation
+    if (buffer.getNumChannels() >= 2)
+        buffer.clear();
+
+    olaBlock(buffer.getWritePointer(0),
+             buffer.getNumChannels() >= 2 ? buffer.getWritePointer(1)
+                                          : buffer.getWritePointer(0),
+             srcCopy.data(),
+             numSamples,
+             azimuth, elevation,
+             /*accumulate=*/false);
+}
+
+void HRTFProcessor::process(juce::AudioBuffer<float>& buffer,
+                              float azimuth, float elevation, float distance)
+{
+    m_distance.store(distance);
+    process(buffer, azimuth, elevation);
 }

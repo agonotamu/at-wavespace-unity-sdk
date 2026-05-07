@@ -71,6 +71,35 @@ public:
      * @return Number of measurements
      */
     int getNumMeasurements() const { return numMeasurements; }
+
+    /**
+     * @brief Direct IR access by measurement index (no position search).
+     * Used by HRTFTable::build() to copy raw IR data into the flat table.
+     * @param index   Measurement index in [0, getNumMeasurements()-1].
+     * @param leftIR  Output: left-ear IR samples.
+     * @param rightIR Output: right-ear IR samples.
+     */
+    void getIRsAtIndex(int index,
+                       std::vector<float>& leftIR,
+                       std::vector<float>& rightIR) const
+    {
+        if (index >= 0 && index < numMeasurements)
+        {
+            leftIR  = leftIRs[index];
+            rightIR = rightIRs[index];
+        }
+    }
+
+    /**
+     * @brief Returns the azimuth (degrees) of the measurement at the given index.
+     * Used by HRTFTable::findBracketingIndices() for HRTF interpolation.
+     */
+    float getPositionAzimuth(int index) const
+    {
+        if (index >= 0 && index < numMeasurements)
+            return positions[index].azimuth;
+        return 0.0f;
+    }
     
     /**
      * @brief Checks if HRTF data is loaded

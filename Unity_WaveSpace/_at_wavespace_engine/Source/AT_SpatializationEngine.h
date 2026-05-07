@@ -12,6 +12,7 @@
 #include "AT_AudioManagerListener.h"
 #include "AT_SpatPlayer.h"
 #include "HRTFProcessor.h"
+#include "HRTFTable.h"
 #include "AT_NearFieldCorrection.h"
 
 namespace AT
@@ -377,7 +378,18 @@ namespace AT
 
         /// Background thread for async HRTF processor destruction.
         /// Joined in close() before audio device teardown.
-        std::thread m_hrtfCleanupThread;
+        // REMOVED: HRTFProcessor destructors are now O(1) — no async needed.
+        // std::thread m_hrtfCleanupThread;
+
+        // ── Shared HRTF table (new architecture) ────────────────────────────────
+        // Built once in loadHRTFFile() / loadDefaultHRTF() and shared (read-only)
+        // across all HRTFProcessor instances via raw const pointer.
+        // Replaces the per-processor SOFAReader copies and juce::dsp::Convolution.
+        std::shared_ptr<HRTFTable> m_sharedHRTFTable;
+
+        // Target IR length for table construction (0 = HRTFTable::MAX_IR_LENGTH).
+        // Controlled by setHrtfTruncate().
+        int m_hrtfMaxLength = 0;
         
         // ====================================================================
         // NEAR FIELD CORRECTION FOR BINAURAL VIRTUALIZATION

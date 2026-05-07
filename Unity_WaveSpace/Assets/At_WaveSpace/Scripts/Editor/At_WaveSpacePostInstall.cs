@@ -38,14 +38,15 @@ public class At_WaveSpacePostInstall : AssetPostprocessor
     {
         FixDylib(Path.GetFullPath(DYLIB_ASSET_PATH));
     }
-
+    /*
     // ── Manual menu item ─────────────────────────────────────────────────────
-    [MenuItem("AT WaveSpace/Fix macOS Codesign (Tahoe)")]
+    [MenuItem("AT_WaveSpace/Fix macOS Codesign (Tahoe)")]
     public static void RunManualFix()
     {
         FixDylib(Path.GetFullPath(DYLIB_ASSET_PATH));
     }
-
+    */
+    
     // ── AssetPostprocessor — runs on fresh .unitypackage import ──────────────
     static void OnPostprocessAllAssets(
         string[] importedAssets,

@@ -38,6 +38,7 @@ set(AT_ENGINE_SOURCES
     Source/AT_Spatializer.cpp
     Source/AT_BinauralSimpleSpatializer.cpp
     Source/HRTFProcessor.cpp
+    Source/HRTFTable.cpp
     Source/SOFAReader.cpp
     Source/UnityLogger.cpp
 )
@@ -125,13 +126,22 @@ target_compile_definitions(at_wavespace_engine
 )
 
 # ==============================================================================
-# Visibilité des symboles : TOUT exporter (= SYMBOLS_HIDDEN_BY_DEFAULT=NO)
-# Nécessaire pour que Unity trouve les fonctions extern "C"
+# Visibilité des symboles
+#
+# PROBLÈME : Unity embarque sa propre instance de JUCE. Sans restriction de
+# visibilité, dyld résout les symboles JUCE de notre dylib vers ceux de Unity
+# (symbol interposition), ce qui provoque un crash au chargement :
+#   juce::StringHolderUtils::release() libère un pointeur alloué par notre heap
+#   via la version de Unity → "POINTER_BEING_FREED_WAS_NOT_ALLOCATED"
+#
+# SOLUTION : cacher tous les symboles C++ (JUCE, STL, …).
+# Les fonctions de l'API C restent visibles car elles sont marquées
+# __attribute__((visibility("default"))) via EXPORT_API dans PluginInterface.h.
 # ==============================================================================
 set_target_properties(at_wavespace_engine PROPERTIES
-    CXX_VISIBILITY_PRESET     default
-    C_VISIBILITY_PRESET       default
-    VISIBILITY_INLINES_HIDDEN OFF
+    CXX_VISIBILITY_PRESET     hidden   # Cache les symboles C++ (JUCE, STL, …)
+    C_VISIBILITY_PRESET       hidden   # Cache les symboles C internes
+    VISIBILITY_INLINES_HIDDEN ON       # Cache les fonctions inline
 )
 
 # ==============================================================================

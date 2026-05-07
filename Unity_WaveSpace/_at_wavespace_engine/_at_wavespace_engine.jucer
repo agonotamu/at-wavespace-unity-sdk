@@ -33,6 +33,8 @@
       <FILE id="R1Nkme" name="HRTFProcessor.h" compile="0" resource="0" file="Source/HRTFProcessor.h"/>
       <FILE id="tez3FJ" name="HRTFProcessor.cpp" compile="1" resource="0"
             file="Source/HRTFProcessor.cpp"/>
+      <FILE id="CHsJyQ" name="HRTFTable.h" compile="0" resource="0" file="Source/HRTFTable.h"/>
+      <FILE id="GVMru8" name="HRTFTable.cpp" compile="1" resource="0" file="Source/HRTFTable.cpp"/>
       <FILE id="e0RQRM" name="AT_NearFieldCorrection.h" compile="0" resource="0"
             file="Source/AT_NearFieldCorrection.h"/>
       <FILE id="hnClhM" name="AT_WfsPrefilter.h" compile="0" resource="0"

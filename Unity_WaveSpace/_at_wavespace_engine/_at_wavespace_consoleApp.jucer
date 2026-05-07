@@ -30,6 +30,8 @@
       <FILE id="Aqm5Kl" name="HRTFProcessor.h" compile="0" resource="0" file="Source/HRTFProcessor.h"/>
       <FILE id="ZpsXmo" name="HRTFProcessor.cpp" compile="1" resource="0"
             file="Source/HRTFProcessor.cpp"/>
+      <FILE id="QwskqH" name="HRTFTable.h" compile="0" resource="0" file="Source/HRTFTable.h"/>
+      <FILE id="HVxFbc" name="HRTFTable.cpp" compile="1" resource="0" file="Source/HRTFTable.cpp"/>
       <FILE id="SBRK2M" name="SOFAReader.h" compile="0" resource="0" file="Source/SOFAReader.h"/>
       <FILE id="mKr09U" name="SOFAReader.cpp" compile="1" resource="0" file="Source/SOFAReader.cpp"/>
       <FILE id="VvG2LJ" name="AT_WfsPrefilter.h" compile="0" resource="0"

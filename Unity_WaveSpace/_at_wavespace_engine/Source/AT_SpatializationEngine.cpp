@@ -56,8 +56,7 @@ namespace AT
         }
         m_spatPlayers.clear();
 
-        if (m_hrtfCleanupThread.joinable())
-            m_hrtfCleanupThread.join();  // wait end before JUCE is destroying
+        // HRTFProcessor destructors are O(1) — no cleanup thread needed.
     }
 
     void SpatializationEngine::setListener(AudioManagerListener* listener)
@@ -222,10 +221,9 @@ namespace AT
                 if (m_sampleRate > 0 && m_samplesPerBlock > 0)
                     dedicatedProcessor->prepare(m_sampleRate, m_samplesPerBlock);
 
-                // Copy HRTF data from processor[0] — no file re-read required
-                dedicatedProcessor->loadHRTFFromSharedReader(
-                    m_puHrtfProcessors[0]->getSOFAReader()
-                );
+                // Give the processor access to the shared HRTF table (no copy)
+                if (m_sharedHRTFTable && m_sharedHRTFTable->isBuilt())
+                    dedicatedProcessor->setHRTFTable(m_sharedHRTFTable.get());
 
                 // Transfer ownership to the player
                 spatPlayer->initializeSimpleBinaural(std::move(dedicatedProcessor), m_sampleRate);
@@ -440,10 +438,10 @@ namespace AT
                 hrtfProcessor->prepare(sampleRate, samplesPerBlock);
         }
 
-        // Auto-load default HRTF once at initialization
+        // Auto-load default HRTF once at initialization, then prepare FFTs
         if (m_isBinauralVirtualization && !m_puHrtfProcessors.empty())
         {
-            bool hrtfAlreadyLoaded = m_puHrtfProcessors[0] && m_puHrtfProcessors[0]->isHRTFLoaded();
+            bool hrtfAlreadyLoaded = m_sharedHRTFTable && m_sharedHRTFTable->isBuilt();
 
             if (!hrtfAlreadyLoaded)
             {
@@ -454,6 +452,20 @@ namespace AT
             else
             {
                 LOG("HRTF already loaded (skipping auto-load)");
+            }
+
+            // Pre-compute IR FFTs now that block size is known.
+            // Idempotent for the same block size. O(M*N*log(N)) one-time cost.
+            if (m_sharedHRTFTable && m_sharedHRTFTable->isBuilt())
+            {
+                m_sharedHRTFTable->prepareFFT(samplesPerBlock);
+                LOG("HRTFTable FFTs prepared: fftSize=" << m_sharedHRTFTable->getFFTSize());
+
+                // Re-prepare processors so their OLA buffers match the new FFT size
+                for (auto& proc : m_puHrtfProcessors)
+                    if (proc) proc->prepare(sampleRate, samplesPerBlock);
+                for (auto& proc : m_puSimpleBinauralPlayerProcessors)
+                    if (proc) proc->prepare(sampleRate, samplesPerBlock);
             }
         }
 
@@ -505,30 +517,18 @@ namespace AT
 
     void SpatializationEngine::close()
     {
-        // Join previous async cleanup if still running
-        if (m_hrtfCleanupThread.joinable())
-            m_hrtfCleanupThread.join();
-        
         stopAllPayers();
 
         if (m_puPlayer)
         {
-            // Remove audio callback first — no audio thread will access
-            // m_puHrtfProcessors after this line.
             m_deviceManager.removeAudioCallback(m_puPlayer.get());
             m_puPlayer->setSource(nullptr);
         }
 
         m_deviceManager.closeAudioDevice();
 
-        if (!m_puHrtfProcessors.empty())
-        {
-            m_hrtfCleanupThread = std::thread([procs = std::move(m_puHrtfProcessors)]() mutable
-            {
-                procs.clear();
-            });
-            // Ne pas détacher — sera joint au prochain appel de close() ou dans le destructeur
-        }
+        // HRTFProcessor destructors are O(1) — no async cleanup needed.
+        m_puHrtfProcessors.clear();
     }
 
     void SpatializationEngine::releaseResources()
@@ -1281,7 +1281,11 @@ namespace AT
                 for (auto& hrtf : m_puHrtfProcessors)
                 {
                     if (hrtf)
+                    {
                         hrtf->prepare(m_sampleRate, m_samplesPerBlock);
+                        if (m_sharedHRTFTable && m_sharedHRTFTable->isFFTPrepared())
+                            hrtf->setHRTFTable(m_sharedHRTFTable.get());
+                    }
                 }
             }
             LOG("HRTF processors resized to: " << m_puHrtfProcessors.size());
@@ -1583,39 +1587,37 @@ namespace AT
         LOG("=== LOADING HRTF FILE ===");
         LOG("  File path: " << filePath);
 
-        if (!m_isBinauralVirtualization)
+        if (!m_isBinauralVirtualization) { LOG_ERROR("Binaural not enabled"); return false; }
+
+        SOFAReader reader;
+        if (!reader.loadFile(juce::File(filePath)))
         {
-            LOG_ERROR("Binaural virtualization not enabled — cannot load HRTF");
-            return false;
-        }
-        if (m_puHrtfProcessors.empty())
-        {
-            LOG_ERROR("No HRTF processors created — call setup() first");
-            return false;
-        }
-        if (!m_puHrtfProcessors[0])
-        {
-            LOG_ERROR("First HRTF processor is null");
+            LOG_ERROR("Failed to load HRTF file");
             return false;
         }
 
-        // Parse the file once into processor[0]
-        bool success = m_puHrtfProcessors[0]->loadHRTFFromFile(filePath);
-        if (!success)
+        m_sharedHRTFTable = std::make_shared<HRTFTable>();
+        if (!m_sharedHRTFTable->build(reader, m_sampleRate, m_hrtfMaxLength))
         {
-            LOG_ERROR("Failed to load HRTF file — check file format and path");
+            LOG_ERROR("HRTFTable::build() failed");
+            m_sharedHRTFTable.reset();
             return false;
         }
 
-        // Copy the already-parsed data to all other processors (in-memory copy, no file I/O)
-        const SOFAReader& sharedReader = m_puHrtfProcessors[0]->getSOFAReader();
-        for (size_t i = 1; i < m_puHrtfProcessors.size(); ++i)
+        // Pre-compute FFTs if block size is already known (runtime reload)
+        if (m_samplesPerBlock > 0)
         {
-            if (m_puHrtfProcessors[i])
-                m_puHrtfProcessors[i]->loadHRTFFromSharedReader(sharedReader);
+            m_sharedHRTFTable->prepareFFT(m_samplesPerBlock);
+            LOG("  FFTs prepared: fftSize=" << m_sharedHRTFTable->getFFTSize());
         }
 
-        LOG("HRTF loaded into all " << m_puHrtfProcessors.size() << " processors");
+        for (auto& proc : m_puHrtfProcessors)
+            if (proc) proc->setHRTFTable(m_sharedHRTFTable.get());
+        for (auto& proc : m_puSimpleBinauralPlayerProcessors)
+            if (proc) proc->setHRTFTable(m_sharedHRTFTable.get());
+
+        LOG("HRTF loaded — " << m_sharedHRTFTable->getNumMeasurements()
+            << " measurements × " << m_sharedHRTFTable->getIRLength() << " samples");
         LOG("========================");
         return true;
     }
@@ -1624,34 +1626,32 @@ namespace AT
     {
         LOG("=== LOADING DEFAULT HRTF ===");
 
-        if (!m_isBinauralVirtualization)
+        if (!m_isBinauralVirtualization) { LOG_ERROR("Binaural not enabled"); return false; }
+
+        SOFAReader reader;
+        reader.createDefaultHRTF();
+
+        m_sharedHRTFTable = std::make_shared<HRTFTable>();
+        if (!m_sharedHRTFTable->build(reader, m_sampleRate, m_hrtfMaxLength))
         {
-            LOG_ERROR("Binaural virtualization not enabled — cannot load HRTF");
-            return false;
-        }
-        if (m_puHrtfProcessors.empty())
-        {
-            LOG_ERROR("No HRTF processors created — call setup() first");
-            return false;
-        }
-        if (!m_puHrtfProcessors[0])
-        {
-            LOG_ERROR("First HRTF processor is null");
+            LOG_ERROR("HRTFTable::build() failed for default HRTF");
+            m_sharedHRTFTable.reset();
             return false;
         }
 
-        // Generate default HRTF data once in processor[0]
-        m_puHrtfProcessors[0]->loadDefaultHRTF();
-
-        // Copy the generated data to all other processors (in-memory copy, no FFT re-init)
-        const SOFAReader& sharedReader = m_puHrtfProcessors[0]->getSOFAReader();
-        for (size_t i = 1; i < m_puHrtfProcessors.size(); ++i)
+        if (m_samplesPerBlock > 0)
         {
-            if (m_puHrtfProcessors[i])
-                m_puHrtfProcessors[i]->loadHRTFFromSharedReader(sharedReader);
+            m_sharedHRTFTable->prepareFFT(m_samplesPerBlock);
+            LOG("  FFTs prepared: fftSize=" << m_sharedHRTFTable->getFFTSize());
         }
 
-        LOG("Default HRTF loaded into all " << m_puHrtfProcessors.size() << " processors");
+        for (auto& proc : m_puHrtfProcessors)
+            if (proc) proc->setHRTFTable(m_sharedHRTFTable.get());
+        for (auto& proc : m_puSimpleBinauralPlayerProcessors)
+            if (proc) proc->setHRTFTable(m_sharedHRTFTable.get());
+
+        LOG("Default HRTF — " << m_sharedHRTFTable->getNumMeasurements()
+            << " measurements × " << m_sharedHRTFTable->getIRLength() << " samples");
         LOG("===========================");
         return true;
     }
@@ -1715,17 +1715,29 @@ namespace AT
 
     void SpatializationEngine::setHrtfTruncate(bool enabled)
     {
-        const int maxLen = enabled ? 512 : 0;
-        for (int i = 0; i < static_cast<int>(m_puHrtfProcessors.size()); ++i)
+        m_hrtfMaxLength = enabled ? 512 : 0;
+
+        if (m_sharedHRTFTable && m_sharedHRTFTable->isBuilt())
         {
-            if (m_puHrtfProcessors[i])
+            HRTFTable newTable;
+            const bool ok = newTable.build(m_sharedHRTFTable->getSOFAReader(),
+                                           m_sampleRate, m_hrtfMaxLength);
+            if (ok)
             {
-                m_puHrtfProcessors[i]->setMaxIRLength(maxLen);
-                // Force IR reload on next block so the new length takes effect.
-                m_puHrtfProcessors[i]->preloadIR(
-                    m_smoothedSpeakerAzimuth[i], 0.0f);
+                if (m_samplesPerBlock > 0)
+                    newTable.prepareFFT(m_samplesPerBlock);
+                *m_sharedHRTFTable = std::move(newTable);
+                // All processors share the same pointer — data replaced in-place.
+                // Re-prepare OLA buffers in case IR length changed (and thus fftSize).
+                for (auto& proc : m_puHrtfProcessors)
+                    if (proc) proc->prepare(m_sampleRate, m_samplesPerBlock);
+            }
+            else
+            {
+                LOG_ERROR("setHrtfTruncate: rebuild failed, keeping old table");
             }
         }
+
         LOG("HRTF truncation: " << (enabled ? "ON (512 samples)" : "OFF (full IR)"));
     }
 
