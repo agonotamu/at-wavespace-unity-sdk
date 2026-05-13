@@ -3,7 +3,42 @@
 #include <cstring>
 #include <cmath>
 
-// ── Stage 1 : build ──────────────────────────────────────────────────────────
+// ── Move assignment ───────────────────────────────────────────────────────────
+//
+// The naive compiler-generated move assignment would:
+//  (a) free the old m_fftData while audio threads may hold raw pointers into it, and
+//  (b) move (and potentially destroy) m_fftDataMutex while a shared_lock is active.
+//
+// The custom implementation acquires the exclusive lock BEFORE touching any data,
+// so tryBlendHRTF() callers finish reading before the old storage is released.
+// m_fftDataMutex is intentionally NOT moved — it stays bound to this object.
+
+HRTFTable& HRTFTable::operator=(HRTFTable&& other) noexcept
+{
+    if (this == &other) return *this;
+
+    // Block until every audio-thread shared_lock on this table's mutex is released.
+    std::unique_lock<std::shared_mutex> lock(*m_fftDataMutex);
+
+    // Move all data members — the old values are destroyed here, safely under lock.
+    m_built           = other.m_built;
+    m_numMeasurements = other.m_numMeasurements;
+    m_irLength        = other.m_irLength;
+    m_data            = std::move(other.m_data);
+    m_sofaReader      = std::move(other.m_sofaReader);
+    m_fftPrepared     = other.m_fftPrepared;
+    m_fftSize         = other.m_fftSize;
+    m_fftOrder        = other.m_fftOrder;
+    m_fftBlockSize    = other.m_fftBlockSize;
+    m_fftData         = std::move(other.m_fftData);   // old m_fftData freed here, under lock
+    m_fft             = std::move(other.m_fft);
+
+    // m_fftDataMutex is intentionally left as-is: audio threads that were
+    // waiting on it will wake up and find the new data already in place.
+    return *this;
+}
+
+
 
 bool HRTFTable::build(const SOFAReader& reader, double audioSampleRate, int maxIRLength)
 {
@@ -73,6 +108,11 @@ void HRTFTable::prepareFFT(int blockSize)
     if (!m_built || blockSize <= 0) return;
     if (m_fftPrepared && blockSize == m_fftBlockSize) return;  // already done
 
+    // Exclusive lock: any concurrent tryBlendHRTF() call will fail its
+    // try_lock_shared() and return false (silent block) for the duration
+    // of this rebuild.  The lock is held until all writes to m_fftData finish.
+    std::unique_lock<std::shared_mutex> lock(*m_fftDataMutex);
+
     // FFT size = smallest power of 2 >= blockSize + irLength - 1
     // This guarantees linear (non-circular) convolution.
     const int minSize = blockSize + m_irLength - 1;
@@ -122,6 +162,36 @@ void HRTFTable::prepareFFT(int blockSize)
 }
 
 // ── HRTF interpolation helpers ───────────────────────────────────────────────
+
+bool HRTFTable::tryBlendHRTF(int idxLower, int idxUpper, float alpha,
+                               float* dstL, float* dstR, int bufSize) const noexcept
+{
+    // Non-blocking shared lock — returns false immediately if prepareFFT() holds
+    // the exclusive lock (m_fftData is being reallocated).
+    std::shared_lock<std::shared_mutex> lock(*m_fftDataMutex, std::try_to_lock);
+    if (!lock) return false;
+
+    // Validate indices under the lock (m_numMeasurements is stable while locked).
+    if (!m_fftPrepared
+        || idxLower < 0 || idxLower >= m_numMeasurements
+        || idxUpper < 0 || idxUpper >= m_numMeasurements)
+        return false;
+
+    const float* hL_lo = getFFT_L(idxLower);
+    const float* hL_hi = getFFT_L(idxUpper);
+    const float* hR_lo = getFFT_R(idxLower);
+    const float* hR_hi = getFFT_R(idxUpper);
+    const float  oneMinusAlpha = 1.0f - alpha;
+
+    // LERP in the frequency domain — auto-vectorised with -O2 (NEON/AVX)
+    for (int k = 0; k < bufSize; ++k)
+    {
+        dstL[k] = oneMinusAlpha * hL_lo[k] + alpha * hL_hi[k];
+        dstR[k] = oneMinusAlpha * hR_lo[k] + alpha * hR_hi[k];
+    }
+
+    return true;
+}
 
 void HRTFTable::findBracketingIndices(float azimuthDeg, float elevationDeg,
                                        int& idxLower, int& idxUpper, float& alpha) const

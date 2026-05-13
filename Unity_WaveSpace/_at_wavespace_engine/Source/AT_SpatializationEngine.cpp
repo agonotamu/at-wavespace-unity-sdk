@@ -698,15 +698,17 @@ namespace AT
                 });
             }
 
-            const int maxWaitIterations = 500000;
-            int waitCount = 0;
+            // Time-based deadline: 85 % of the audio block duration.
+            // An iteration-based count would be CPU-speed dependent.
+            const double wfsBlockMs  = (bufferToFill.numSamples * 1000.0) / m_sampleRate;
+            const double wfsDeadline = juce::Time::getMillisecondCounterHiRes()
+                                       + wfsBlockMs * 0.85;
 
             while (m_playersProcessed.load(std::memory_order_acquire) < numPlayers)
             {
-                if (++waitCount > maxWaitIterations)
+                if (juce::Time::getMillisecondCounterHiRes() > wfsDeadline)
                 {
-                    jassertfalse;
-                    LOG_ERROR("Multithreading timeout! Processing remaining players sequentially.");
+                    LOG_ERROR("WFS threading timeout — completing remaining players on audio thread.");
 
                     for (int i = 0; i < numPlayers; i++)
                     {
@@ -808,72 +810,126 @@ namespace AT
                 && !m_hrtfThreadBuffers.empty())
             {
                 const int numThreads = static_cast<int>(m_hrtfThreadBuffers.size());
+
+                // Wait for any workers still running from the previous block.
+                // When a block times out (timedOut = true), workers may still be
+                // writing into m_hrtfThreadBuffers and per-processor work buffers
+                // when the next callback starts.  Resetting m_hrtfProcessed and
+                // clearing the thread buffers before they finish corrupts the FFT
+                // input and causes an access violation in juce_FFT.cpp.
+                // m_hrtfPrevCount tracks how many threads were dispatched last block.
+                if (m_hrtfPrevCount > 0)
+                {
+                    int guard = 0;
+                    while (m_hrtfProcessed.load(std::memory_order_acquire) < m_hrtfPrevCount)
+                    {
+                        if (++guard > 100000) break;   // safety limit — don't hang
+                        juce::Thread::yield();
+                    }
+                }
+                m_hrtfPrevCount = numThreads;   // remember for next block
+
                 for (auto& buf : m_hrtfThreadBuffers)
                     buf.clear();
 
-                const int speakersPerThread = (m_numVirtualSpeakers + numThreads - 1) / numThreads;
+                const int safeN = m_numVirtualSpeakers;  // snapshot — addPlayer() may
+                                                         // increment this concurrently
+                const int speakersPerThread = (safeN + numThreads - 1) / numThreads;
                 m_hrtfProcessed.store(0, std::memory_order_release);
 
-                for (int t = 0; t < numThreads; ++t)
+                // Capture numSamples, speakersPerThread, and safeN by value.
+                // Workers read m_numVirtualSpeakers through safeN so that a
+                // concurrent addPlayer() cannot extend endCh to a partially-
+                // initialised processor while the block is in flight.
+                auto processChunk = [this, numSamples, speakersPerThread, safeN](int t)
                 {
-                    m_audioThreadPool.addJob([this, t, numSamples, speakersPerThread]()\
+                    const int startCh = t * speakersPerThread;
+                    const int endCh   = std::min(startCh + speakersPerThread, safeN);
+
+                    for (int ch = startCh; ch < endCh; ++ch)
                     {
-                        const int startCh = t * speakersPerThread;
-                        const int endCh   = std::min(startCh + speakersPerThread, m_numVirtualSpeakers);
+                        if (!m_puHrtfProcessors[ch])
+                            continue;
 
-                        for (int ch = startCh; ch < endCh; ++ch)
+                        // Skip silent channels after a hold period so the OLA
+                        // tail drains before convolution is bypassed.
+                        const float* wfsData = m_wfsBuffer.getReadPointer(ch);
+                        float maxAbs = 0.0f;
+                        for (int i = 0; i < numSamples; ++i)
+                            maxAbs = std::max(maxAbs, std::abs(wfsData[i]));
+
+                        if (maxAbs < HRTF_SKIP_THRESHOLD)
                         {
-                            if (!m_puHrtfProcessors[ch])
+                            if (++m_hrtfChannelHold[ch] > HRTF_HOLD_BLOCKS)
                                 continue;
-
-                            // Hold-counter bypass: skip only after HRTF_HOLD_BLOCKS
-                            // consecutive quiet blocks so the convolver tail drains cleanly.
-                            const float* wfsData = m_wfsBuffer.getReadPointer(ch);
-                            float maxAbs = 0.0f;
-                            for (int i = 0; i < numSamples; ++i)
-                                if (std::abs(wfsData[i]) > maxAbs)
-                                    maxAbs = std::abs(wfsData[i]);
-
-                            if (maxAbs < HRTF_SKIP_THRESHOLD)
-                            {
-                                if (++m_hrtfChannelHold[ch] > HRTF_HOLD_BLOCKS)
-                                    continue;   // truly silent: skip convolution
-                                // still within hold period: fall through and process
-                                // so the tail drains without an abrupt cut
-                            }
-                            else
-                            {
-                                m_hrtfChannelHold[ch] = 0;   // channel active: reset
-                            }
-
-                            float azimuth = m_smoothedSpeakerAzimuth[ch];
-
-                            // Each thread accumulates into its own buffer — no race condition
-                            m_puHrtfProcessors[ch]->processAndAccumulate(
-                                m_hrtfThreadBuffers[t], m_wfsBuffer, ch, numSamples, azimuth, 0.0f
-                            );
                         }
-                        m_hrtfProcessed.fetch_add(1, std::memory_order_release);
-                    });
-                }
+                        else
+                        {
+                            m_hrtfChannelHold[ch] = 0;
+                        }
 
-                // Spin-wait (same pattern as processPlayersWFS)
-                int waitCount = 0;
+                        m_puHrtfProcessors[ch]->processAndAccumulate(
+                            m_hrtfThreadBuffers[t], m_wfsBuffer, ch, numSamples,
+                            m_smoothedSpeakerAzimuth[ch], 0.0f);
+                    }
+                    m_hrtfProcessed.fetch_add(1, std::memory_order_release);
+                };
+
+                // Dispatch (numThreads - 1) chunks to worker threads.
+                // The audio thread handles the last chunk itself so it stays
+                // productive rather than idle-spinning while workers run.
+                const int numWorkerJobs = numThreads - 1;
+                for (int t = 0; t < numWorkerJobs; ++t)
+                    m_audioThreadPool.addJob([processChunk, t]() { processChunk(t); });
+
+                // Audio thread processes its own chunk concurrently with workers.
+                processChunk(numWorkerJobs);
+
+                // Wait for worker threads with a time-based deadline rather than
+                // a fixed iteration count, which would be CPU-speed dependent.
+                // Deadline = 85 % of the audio block duration.
+                // On Windows the RT audio thread cannot yield to lower-priority
+                // worker threads via Sleep(0); if workers are still running when
+                // the deadline fires we skip the accumulation to avoid a data race.
+                const double blockMs  = (numSamples * 1000.0) / m_sampleRate;
+                const double deadline = juce::Time::getMillisecondCounterHiRes()
+                                        + blockMs * 0.85;
+
+                bool timedOut = false;
                 while (m_hrtfProcessed.load(std::memory_order_acquire) < numThreads)
                 {
-                    if (++waitCount > 500000) { jassertfalse; break; }
+                    if (juce::Time::getMillisecondCounterHiRes() > deadline)
+                    {
+                        timedOut = true;
+                        break;
+                    }
                     juce::Thread::yield();
                 }
 
-                // Sum thread buffers into m_binauralTemp
-                for (int t = 0; t < numThreads; ++t)
+                // The audio thread processed chunk [numWorkerJobs] above, so
+                // m_hrtfThreadBuffers[numWorkerJobs] is guaranteed complete.
+                // Accumulate it unconditionally.
+                // Worker buffers [0..numWorkerJobs-1] are only accumulated when
+                // every worker finished before the deadline — reading a buffer
+                // whose worker is still writing would be a data race.
+                juce::FloatVectorOperations::add(
+                    m_binauralTemp.getWritePointer(0),
+                    m_hrtfThreadBuffers[numWorkerJobs].getReadPointer(0), numSamples);
+                juce::FloatVectorOperations::add(
+                    m_binauralTemp.getWritePointer(1),
+                    m_hrtfThreadBuffers[numWorkerJobs].getReadPointer(1), numSamples);
+
+                if (!timedOut)
                 {
-                    juce::FloatVectorOperations::add(
-                        m_binauralTemp.getWritePointer(0),
-                        m_hrtfThreadBuffers[t].getReadPointer(0), numSamples);
-                    juce::FloatVectorOperations::add(
-                        m_binauralTemp.getWritePointer(1),
-                        m_hrtfThreadBuffers[t].getReadPointer(1), numSamples);
+                    for (int t = 0; t < numWorkerJobs; ++t)
+                    {
+                        juce::FloatVectorOperations::add(
+                            m_binauralTemp.getWritePointer(0),
+                            m_hrtfThreadBuffers[t].getReadPointer(0), numSamples);
+                        juce::FloatVectorOperations::add(
+                            m_binauralTemp.getWritePointer(1),
+                            m_hrtfThreadBuffers[t].getReadPointer(1), numSamples);
+                    }
                 }
             }
             else

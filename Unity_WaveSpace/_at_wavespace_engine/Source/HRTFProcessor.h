@@ -4,6 +4,7 @@
 #include "HRTFTable.h"
 #include <vector>
 #include <atomic>
+#include <mutex>
 
 /**
  * @file HRTFProcessor.h
@@ -120,6 +121,16 @@ private:
     std::vector<float> m_workBufOldR;  ///< 2 * fftSize  — H_blend scratch, right
     std::vector<float> m_overlapL;     ///< fftSize       — OLA tail, left
     std::vector<float> m_overlapR;     ///< fftSize       — OLA tail, right
+
+    // Private FFT instance — owns its own twiddle factors so that a concurrent
+    // HRTFTable::prepareFFT() call (which destroys and recreates m_table's FFT)
+    // never invalidates an in-progress transform on this processor.
+    std::unique_ptr<juce::dsp::FFT> m_fft;
+
+    // Mutex protecting all work buffers and m_fft against concurrent prepare() calls.
+    // olaBlock uses try_lock (non-blocking on the RT audio thread).
+    // prepare() uses a blocking lock (waits at most one audio block ~42 ms).
+    std::mutex m_bufferMutex;
 
     double m_sampleRate   = 44100.0;
     int    m_maxBlockSize = 512;

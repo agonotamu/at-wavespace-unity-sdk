@@ -9,7 +9,12 @@
 #include "UnityLogger.h"
 #include <cstring>
 #include <chrono>
+#include <map>
 #include "AT_SpatConfig.h"
+
+#if JUCE_WINDOWS
+#include <windows.h>   // HKEY, RegOpenKeyExW, RegEnumKeyExW, RegCloseKey
+#endif
 
 namespace AT
 {
@@ -84,9 +89,57 @@ namespace AT
     // DEVICE ENUMERATION
     // ========================================================================
 
+    // ── Helper: enumerate names from a single AudioIODeviceType ─────────────────
+    static void appendDeviceNames(juce::AudioIODeviceType* type,
+                                   const std::string&        typeName,
+                                   std::vector<DeviceInfo>& out)
+    {
+        if (!type) return;
+        try
+        {
+            type->scanForDevices();
+            for (const auto& name : type->getDeviceNames())
+            {
+                DeviceInfo info;
+                info.name              = name.toStdString();
+                info.typeName          = typeName;
+                info.maxInputChannels  = -1;   // lazy-loaded in filterUnavailableDevices
+                info.maxOutputChannels = -1;
+                out.push_back(std::move(info));
+                LOG("[AudioManager]   + " << info.name << " (" << typeName << ")");
+            }
+        }
+        catch (const std::exception& e) { LOG_WARNING("[AudioManager] " << typeName << ": " << e.what()); }
+        catch (...)                      { LOG_WARNING("[AudioManager] " << typeName << ": unknown exception"); }
+    }
+
+    // ── Helper: build an AudioIODeviceType for a given type name ──────────────
+    static std::unique_ptr<juce::AudioIODeviceType> makeDeviceType(const std::string& typeName)
+    {
+        std::unique_ptr<juce::AudioIODeviceType> t;
+        #if JUCE_WINDOWS
+        if (typeName == "Windows Audio")
+            t.reset(juce::AudioIODeviceType::createAudioIODeviceType_WASAPI(
+                        juce::WASAPIDeviceMode::shared));
+        #if JUCE_ASIO
+        else if (typeName == "ASIO")
+            t.reset(juce::AudioIODeviceType::createAudioIODeviceType_ASIO());
+        #endif
+        #elif JUCE_MAC
+        if (typeName == "CoreAudio")
+            t.reset(juce::AudioIODeviceType::createAudioIODeviceType_CoreAudio());
+        #endif
+        return t;
+    }
+
     void AudioManager::scanAndCacheDevices(bool includeASIO)
     {
-        LOG("[AudioManager] scanAndCacheDevices() called (includeASIO="
+        // No AudioDeviceManager is created here, so no MIDI listener is registered
+        // and no setCurrentThreadAsMessageThread() is required.
+        // Only device names are retrieved; channel counts are lazily filled by
+        // filterUnavailableDevices() and getDetailedDeviceInfo().
+
+        LOG("[AudioManager] scanAndCacheDevices (includeASIO="
             << (includeASIO ? "true" : "false") << ")");
 
         auto startTime = std::chrono::high_resolution_clock::now();
@@ -94,180 +147,70 @@ namespace AT
         std::lock_guard<std::mutex> lock(m_deviceCacheMutex);
         m_cachedDevices.clear();
 
-        try
+        // ── WASAPI ──────────────────────────────────────────────────────────────
+        #if JUCE_WINDOWS
         {
-            juce::AudioDeviceManager tempDeviceManager;
-
-            #if JUCE_WINDOWS
-            juce::OwnedArray<juce::AudioIODeviceType> deviceTypesToAdd;
-
-            try
-            {
-                tempDeviceManager.createAudioDeviceTypes(deviceTypesToAdd);
-                LOG("[AudioManager] Created " << deviceTypesToAdd.size() << " device types");
-            }
-            catch (const std::exception& e)
-            {
-                LOG_ERROR("[AudioManager] Exception creating device types: " << e.what());
-                m_devicesCached = true;
-                m_devicesCachedAtomic = true;
-                return;
-            }
-            catch (...)
-            {
-                LOG_ERROR("[AudioManager] Unknown exception creating device types");
-                m_devicesCached = true;
-                m_devicesCachedAtomic = true;
-                return;
-            }
-
-            for (int i = deviceTypesToAdd.size() - 1; i >= 0; --i)
-            {
-                if (m_shouldStopScan)
-                {
-                    LOG("[AudioManager] Device scan interrupted");
-                    return;
-                }
-
-                auto* deviceType = deviceTypesToAdd[i];
-                if (deviceType == nullptr)
-                    continue;
-
-                juce::String typeName = deviceType->getTypeName();
-
-                try
-                {
-                    #if JUCE_ASIO
-                    if (typeName == "ASIO" && !includeASIO)
-                    {
-                        LOG("[AudioManager] Skipping ASIO (not requested)");
-                        continue;
-                    }
-
-                    if (typeName == "ASIO" && includeASIO)
-                    {
-                        LOG("[AudioManager] Scanning ASIO devices (this may take several seconds)...");
-                        try
-                        {
-                            deviceType->scanForDevices();
-                            juce::StringArray asioDevices = deviceType->getDeviceNames();
-
-                            if (asioDevices.isEmpty())
-                            {
-                                LOG("[AudioManager] No ASIO devices found, skipping ASIO driver type");
-                                continue;
-                            }
-                            else
-                            {
-                                LOG("[AudioManager] Found " << asioDevices.size() << " ASIO device(s)");
-                            }
-                        }
-                        catch (const std::exception& e)
-                        {
-                            LOG_WARNING("[AudioManager] Exception scanning ASIO: " << e.what() << " - Skipping");
-                            continue;
-                        }
-                        catch (...)
-                        {
-                            LOG_WARNING("[AudioManager] Unknown exception scanning ASIO - Skipping");
-                            continue;
-                        }
-                    }
-                    #endif
-
-                    std::unique_ptr<juce::AudioIODeviceType> typePtr(
-                        deviceTypesToAdd.removeAndReturn(i));
-                    tempDeviceManager.addAudioDeviceType(std::move(typePtr));
-
-                    LOG("[AudioManager] Added device type: " << typeName.toStdString());
-                }
-                catch (const std::exception& e)
-                {
-                    LOG_WARNING("[AudioManager] Exception adding device type '"
-                               << typeName.toStdString() << "': " << e.what());
-                }
-                catch (...)
-                {
-                    LOG_WARNING("[AudioManager] Unknown exception adding device type: "
-                               << typeName.toStdString());
-                }
-            }
-            #endif
-
-            const auto& deviceTypes = tempDeviceManager.getAvailableDeviceTypes();
-            LOG("[AudioManager] Available device types: " << deviceTypes.size());
-
-            for (int typeIndex = 0; typeIndex < deviceTypes.size(); ++typeIndex)
-            {
-                if (m_shouldStopScan)
-                {
-                    LOG("[AudioManager] Device scan interrupted");
-                    return;
-                }
-
-                auto* deviceType = deviceTypes[typeIndex];
-                if (deviceType == nullptr)
-                    continue;
-
-                juce::String typeName = deviceType->getTypeName();
-
-                try
-                {
-                    LOG("[AudioManager] Scanning devices for type: " << typeName.toStdString());
-                    deviceType->scanForDevices();
-                    juce::StringArray deviceNames = deviceType->getDeviceNames();
-                    LOG("[AudioManager] Found " << deviceNames.size()
-                        << " device(s) for type: " << typeName.toStdString());
-
-                    for (int i = 0; i < deviceNames.size(); ++i)
-                    {
-                        if (m_shouldStopScan)
-                        {
-                            LOG("[AudioManager] Device scan interrupted");
-                            return;
-                        }
-
-                        juce::String deviceName = deviceNames[i];
-
-                        DeviceInfo info;
-                        info.name = deviceName.toStdString();
-                        info.typeName = deviceType->getTypeName().toStdString();
-                        info.maxInputChannels  = -1; // not yet queried (lazy loading)
-                        info.maxOutputChannels = -1;
-
-                        m_cachedDevices.push_back(info);
-                        LOG("[AudioManager]   - " << info.name << " (" << info.typeName << ")");
-                    }
-                }
-                catch (const std::exception& e)
-                {
-                    LOG_WARNING("[AudioManager] Exception scanning device type '"
-                               << typeName.toStdString() << "': " << e.what());
-                }
-                catch (...)
-                {
-                    LOG_WARNING("[AudioManager] Unknown exception scanning device type: "
-                               << typeName.toStdString());
-                }
-            }
-        }
-        catch (const std::exception& e)
-        {
-            LOG_ERROR("[AudioManager] Critical exception during device scan: " << e.what());
-        }
-        catch (...)
-        {
-            LOG_ERROR("[AudioManager] Critical unknown exception during device scan");
+            std::unique_ptr<juce::AudioIODeviceType> wasapi(
+                juce::AudioIODeviceType::createAudioIODeviceType_WASAPI(
+                    juce::WASAPIDeviceMode::shared));
+            LOG("[AudioManager] Scanning WASAPI devices...");
+            appendDeviceNames(wasapi.get(), "Windows Audio", m_cachedDevices);
         }
 
-        m_devicesCached = true;
+        // ── ASIO — read driver names from the Windows Registry, no COM loading ─
+        // RegOpenKeyEx / RegEnumKeyEx are instantaneous; ASIO COM objects are NOT
+        // loaded here.  Channel counts remain at -1 and are resolved lazily by
+        // getDetailedDeviceInfo() when the user selects an ASIO device.
+        #if JUCE_ASIO
+        if (includeASIO)
+        {
+            LOG("[AudioManager] Scanning ASIO drivers from registry...");
+            HKEY asioKey;
+            if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SOFTWARE\ASIO",
+                              0, KEY_READ, &asioKey) == ERROR_SUCCESS)
+            {
+                wchar_t driverName[256];
+                DWORD   nameLen = 256;
+                DWORD   index   = 0;
+                while (RegEnumKeyExW(asioKey, index++,
+                                     driverName, &nameLen,
+                                     nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS)
+                {
+                    DeviceInfo info;
+                    info.name              = juce::String(driverName).toStdString();
+                    info.typeName          = "ASIO";
+                    info.maxInputChannels  = -1;
+                    info.maxOutputChannels = -1;
+                    m_cachedDevices.push_back(std::move(info));
+                    LOG("[AudioManager]   + " << info.name << " (ASIO)");
+                    nameLen = 256;
+                }
+                RegCloseKey(asioKey);
+            }
+            else
+            {
+                LOG("[AudioManager] No ASIO key found in registry");
+            }
+        }
+        #endif // JUCE_ASIO
+
+        #elif JUCE_MAC
+        // ── CoreAudio ───────────────────────────────────────────────────────────
+        {
+            std::unique_ptr<juce::AudioIODeviceType> coreAudio(
+                juce::AudioIODeviceType::createAudioIODeviceType_CoreAudio());
+            LOG("[AudioManager] Scanning CoreAudio devices...");
+            appendDeviceNames(coreAudio.get(), "CoreAudio", m_cachedDevices);
+        }
+        #endif
+
+        m_devicesCached      = true;
         m_devicesCachedAtomic = true;
 
-        auto endTime = std::chrono::high_resolution_clock::now();
-        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime);
-
-        LOG("[AudioManager] Device scan completed in " << duration.count() << " ms");
-        LOG("[AudioManager] Total devices found: " << m_cachedDevices.size());
+        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                      std::chrono::high_resolution_clock::now() - startTime).count();
+        LOG("[AudioManager] Scan complete: " << m_cachedDevices.size()
+            << " device(s) in " << ms << " ms");
     }
 
     void AudioManager::scanDevicesAsync(bool includeASIO)
@@ -353,6 +296,10 @@ namespace AT
 
     DeviceInfo AudioManager::getDetailedDeviceInfo(int index)
     {
+        // Called lazily (once) when the user selects a device in the Inspector.
+        // Creates only the AudioIODeviceType matching the cached entry — no full
+        // AudioDeviceManager, no MIDI registration.
+        // For ASIO this may take a few seconds (COM object loaded on first call).
         std::lock_guard<std::mutex> lock(m_deviceCacheMutex);
 
         if (index < 0 || index >= static_cast<int>(m_cachedDevices.size()))
@@ -365,68 +312,51 @@ namespace AT
 
         if (info.maxInputChannels != -1 && info.maxOutputChannels != -1)
             return info;
-
         if (info.maxOutputChannels == 0)
             return info;
 
-        LOG("[AudioManager] Querying detailed info for device: " << info.name);
+        LOG("[AudioManager] Querying details for: " << info.name
+            << " (" << info.typeName << ")");
+
+        auto deviceType = makeDeviceType(info.typeName);
+        if (!deviceType)
+        {
+            LOG_WARNING("[AudioManager] No device type factory for: " << info.typeName);
+            info.maxInputChannels  = 0;
+            info.maxOutputChannels = 0;
+            return info;
+        }
 
         try
         {
-            juce::AudioDeviceManager tempDeviceManager;
-
-            #if JUCE_WINDOWS
-            juce::OwnedArray<juce::AudioIODeviceType> deviceTypesToAdd;
-            tempDeviceManager.createAudioDeviceTypes(deviceTypesToAdd);
-
-            for (int i = deviceTypesToAdd.size() - 1; i >= 0; --i)
+            deviceType->scanForDevices();
+            std::unique_ptr<juce::AudioIODevice> device(
+                deviceType->createDevice(juce::String(info.name),
+                                          juce::String(info.name)));
+            if (device)
             {
-                std::unique_ptr<juce::AudioIODeviceType> typePtr(
-                    deviceTypesToAdd.removeAndReturn(i));
-                tempDeviceManager.addAudioDeviceType(std::move(typePtr));
+                info.maxOutputChannels = device->getOutputChannelNames().size();
+                info.maxInputChannels  = device->getInputChannelNames().size();
+                LOG("[AudioManager] " << info.name << ": "
+                    << info.maxOutputChannels << " out, "
+                    << info.maxInputChannels  << " in");
             }
-            #endif
-
-            const auto& deviceTypes = tempDeviceManager.getAvailableDeviceTypes();
-
-            for (auto* deviceType : deviceTypes)
+            else
             {
-                if (deviceType->getTypeName().toStdString() == info.typeName)
-                {
-                    deviceType->scanForDevices();
-
-                    std::unique_ptr<juce::AudioIODevice> device(
-                        deviceType->createDevice(juce::String(info.name), juce::String(info.name)));
-
-                    if (device != nullptr)
-                    {
-                        info.maxInputChannels  = device->getInputChannelNames().size();
-                        info.maxOutputChannels = device->getOutputChannelNames().size();
-
-                        LOG("[AudioManager] Device '" << info.name << "': "
-                            << info.maxOutputChannels << " outputs, "
-                            << info.maxInputChannels << " inputs");
-                    }
-                    else
-                    {
-                        info.maxInputChannels  = 0;
-                        info.maxOutputChannels = 0;
-                        LOG_WARNING("[AudioManager] Device '" << info.name
-                            << "' is not available (not connected)");
-                    }
-                    break;
-                }
+                info.maxOutputChannels = 0;
+                info.maxInputChannels  = 0;
+                LOG_WARNING("[AudioManager] Could not create device: " << info.name);
             }
         }
         catch (const std::exception& e)
         {
-            LOG_ERROR("[AudioManager] Exception querying device details: " << e.what());
+            LOG_ERROR("[AudioManager] getDetailedDeviceInfo: " << e.what());
             info.maxInputChannels  = 0;
             info.maxOutputChannels = 0;
         }
         catch (...)
         {
-            LOG_ERROR("[AudioManager] Unknown exception querying device details");
+            LOG_ERROR("[AudioManager] getDetailedDeviceInfo: unknown exception");
             info.maxInputChannels  = 0;
             info.maxOutputChannels = 0;
         }
@@ -436,96 +366,96 @@ namespace AT
 
     void AudioManager::filterUnavailableDevices()
     {
+        // Validates devices and resolves channel counts without creating a full
+        // AudioDeviceManager.  Strategy per driver type:
+        //
+        //   WASAPI  — createDevice() is fast (~10 ms); channels resolved immediately.
+        //   ASIO    — COM loading is slow; ASIO devices are left at maxOutputChannels = -1
+        //             and their channel count is resolved lazily by getDetailedDeviceInfo()
+        //             when the user selects them in the Inspector.
+        //   CoreAudio — same fast path as WASAPI.
+
         std::lock_guard<std::mutex> lock(m_deviceCacheMutex);
-
         LOG("[AudioManager] Filtering unavailable devices...");
-        int validCount = 0;
-        int invalidCount = 0;
 
-        try
+        int valid   = 0;
+        int skipped = 0;
+        int invalid = 0;
+
+        // Cache one live AudioIODeviceType per type name to avoid repeated COM init.
+        std::map<std::string, std::unique_ptr<juce::AudioIODeviceType>> typeCache;
+
+        for (auto& info : m_cachedDevices)
         {
-            juce::AudioDeviceManager tempDeviceManager;
+            if (info.maxOutputChannels != -1)
+                continue;
 
-            #if JUCE_WINDOWS
-            juce::OwnedArray<juce::AudioIODeviceType> deviceTypesToAdd;
-            tempDeviceManager.createAudioDeviceTypes(deviceTypesToAdd);
-
-            for (int i = deviceTypesToAdd.size() - 1; i >= 0; --i)
+            // ASIO devices are validated lazily — loading their COM object here would
+            // negate the speed gain of the registry-based scan.
+            if (info.typeName == "ASIO")
             {
-                std::unique_ptr<juce::AudioIODeviceType> typePtr(
-                    deviceTypesToAdd.removeAndReturn(i));
-                tempDeviceManager.addAudioDeviceType(std::move(typePtr));
+                ++skipped;
+                LOG("[AudioManager] ASIO '" << info.name << "' — deferred to lazy load");
+                continue;
             }
-            #endif
 
-            const auto& deviceTypes = tempDeviceManager.getAvailableDeviceTypes();
-
-            for (auto& info : m_cachedDevices)
+            // Build (or reuse) the AudioIODeviceType for this driver family.
+            auto& typePtr = typeCache[info.typeName];
+            if (!typePtr)
             {
-                if (info.maxOutputChannels != -1)
-                    continue;
+                typePtr = makeDeviceType(info.typeName);
+                if (typePtr)
+                    typePtr->scanForDevices();
+            }
 
-                bool deviceValid = false;
+            if (!typePtr)
+            {
+                info.maxInputChannels  = 0;
+                info.maxOutputChannels = 0;
+                ++invalid;
+                continue;
+            }
 
-                for (auto* deviceType : deviceTypes)
+            try
+            {
+                std::unique_ptr<juce::AudioIODevice> device(
+                    typePtr->createDevice(juce::String(info.name),
+                                           juce::String(info.name)));
+                if (device)
                 {
-                    if (deviceType->getTypeName().toStdString() == info.typeName)
-                    {
-                        try
-                        {
-                            deviceType->scanForDevices();
-
-                            std::unique_ptr<juce::AudioIODevice> device(
-                                deviceType->createDevice(juce::String(info.name), juce::String(info.name)));
-
-                            if (device != nullptr)
-                            {
-                                info.maxInputChannels  = device->getInputChannelNames().size();
-                                info.maxOutputChannels = device->getOutputChannelNames().size();
-                                deviceValid = true;
-                                validCount++;
-
-                                LOG("[AudioManager] Device '" << info.name << "': "
-                                    << info.maxOutputChannels << " outputs, "
-                                    << info.maxInputChannels << " inputs");
-                            }
-                        }
-                        catch (const std::exception& e)
-                        {
-                            LOG_WARNING("[AudioManager] Exception validating device '"
-                                << info.name << "': " << e.what());
-                        }
-                        catch (...)
-                        {
-                            LOG_WARNING("[AudioManager] Unknown exception validating device '"
-                                << info.name << "'");
-                        }
-
-                        break;
-                    }
+                    info.maxOutputChannels = device->getOutputChannelNames().size();
+                    info.maxInputChannels  = device->getInputChannelNames().size();
+                    ++valid;
+                    LOG("[AudioManager] '" << info.name << "': "
+                        << info.maxOutputChannels << " out, "
+                        << info.maxInputChannels  << " in");
                 }
-
-                if (!deviceValid)
+                else
                 {
-                    info.maxInputChannels  = 0;
                     info.maxOutputChannels = 0;
-                    invalidCount++;
-                    LOG_WARNING("[AudioManager] Device '" << info.name
-                        << "' marked as unavailable (not connected or error)");
+                    info.maxInputChannels  = 0;
+                    ++invalid;
+                    LOG_WARNING("[AudioManager] '" << info.name << "' unavailable");
                 }
             }
-        }
-        catch (const std::exception& e)
-        {
-            LOG_ERROR("[AudioManager] Exception during device filtering: " << e.what());
-        }
-        catch (...)
-        {
-            LOG_ERROR("[AudioManager] Unknown exception during device filtering");
+            catch (const std::exception& e)
+            {
+                LOG_WARNING("[AudioManager] filterUnavailableDevices '"
+                    << info.name << "': " << e.what());
+                info.maxOutputChannels = 0;
+                info.maxInputChannels  = 0;
+                ++invalid;
+            }
+            catch (...)
+            {
+                info.maxOutputChannels = 0;
+                info.maxInputChannels  = 0;
+                ++invalid;
+            }
         }
 
-        LOG("[AudioManager] Device filtering complete: "
-            << validCount << " valid, " << invalidCount << " unavailable");
+        LOG("[AudioManager] Filter done: " << valid << " valid, "
+            << skipped << " ASIO deferred, " << invalid << " unavailable");
     }
 
     // ========================================================================
@@ -614,6 +544,11 @@ namespace AT
             LOG("AudioManager::setup - waiting for device scan to complete...");
             waitForDeviceScan(10000);
         }
+
+        // Ensure Unity's main thread is the JUCE message thread.
+        // AudioDeviceManager::initialise() (called by SpatializationEngine::setup)
+        // registers MIDI listeners that require JUCE_ASSERT_MESSAGE_THREAD.
+        juce::MessageManager::getInstance()->setCurrentThreadAsMessageThread();
 
         // Store the binaural flag and virtual speaker count before configuring the engine
         m_isBinauralVirtualization = isBinauralVirtualization;

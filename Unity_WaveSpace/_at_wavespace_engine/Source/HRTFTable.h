@@ -4,6 +4,7 @@
 #include <vector>
 #include <memory>
 #include <cassert>
+#include <shared_mutex>     // std::shared_mutex, std::shared_lock (C++17)
 
 /**
  * @file HRTFTable.h
@@ -32,7 +33,16 @@ class HRTFTable
 public:
     static constexpr int MAX_IR_LENGTH = 1024;
 
-    HRTFTable() = default;
+    // Explicit default constructor: initialises the mutex on the heap.
+    // The unique_ptr approach (vs a plain member) keeps HRTFTable movable
+    // because std::shared_mutex itself is not movable.
+    HRTFTable() : m_fftDataMutex(new std::shared_mutex()) {}
+
+    // Custom move assignment: acquires the exclusive lock on *this before
+    // replacing m_fftData and m_fft, so that any audio thread currently inside
+    // tryBlendHRTF (shared lock) finishes before the old data is freed.
+    // The mutex itself is NOT moved — it stays bound to this object.
+    HRTFTable& operator=(HRTFTable&& other) noexcept;
 
     // ── Stage 1 ───────────────────────────────────────────────────────────────
 
@@ -62,35 +72,31 @@ public:
     int  getFFTSize()        const { return m_fftSize; }
     int  getFFTOrder()       const { return m_fftOrder; }
 
-    // ── Runtime access (audio thread, O(1)) ───────────────────────────────────
+    // ── Runtime access (audio thread) ────────────────────────────────────────
 
     /**
-     * @brief Pre-computed complex FFT of left IR for measurement m.
-     * Size: 2 * getFFTSize() floats, JUCE interleaved [re0,im0, re1,im1, …].
+     * @brief Blend two bracketing HRTF bins and write into dstL/dstR.
+     *
+     * Acquires a shared (read) lock on m_fftDataMutex via try_lock_shared —
+     * non-blocking on the RT audio thread.  Returns false if prepareFFT()
+     * currently holds the exclusive lock, which means m_fftData is being
+     * reallocated.  The caller should produce silence for this block.
+     *
+     * This replaces direct getFFT_L/R pointer access, which would yield a
+     * dangling pointer if prepareFFT() reallocates m_fftData concurrently.
      */
+    bool tryBlendHRTF(int idxLower, int idxUpper, float alpha,
+                       float* dstL, float* dstR, int bufSize) const noexcept;
+
+    // Internal raw accessors — only safe when m_fftDataMutex is held.
+    // Used exclusively by tryBlendHRTF() and by prepareFFT() (exclusive lock).
     const float* getFFT_L(int m) const noexcept
     {
-        assert(m_fftPrepared && m >= 0 && m < m_numMeasurements);
         return m_fftData.data() + static_cast<size_t>(m) * 2 * 2 * m_fftSize;
     }
-
-    /**
-     * @brief Pre-computed complex FFT of right IR for measurement m.
-     */
     const float* getFFT_R(int m) const noexcept
     {
-        assert(m_fftPrepared && m >= 0 && m < m_numMeasurements);
         return m_fftData.data() + static_cast<size_t>(m) * 2 * 2 * m_fftSize + 2 * m_fftSize;
-    }
-
-    /**
-     * @brief Shared juce::dsp::FFT instance.
-     * juce::dsp::FFT is stateless (read-only twiddle factors) → thread-safe.
-     */
-    const juce::dsp::FFT& getFFT() const
-    {
-        assert(m_fftPrepared);
-        return *m_fft;
     }
 
     // ── Position lookup ───────────────────────────────────────────────────────
@@ -147,6 +153,15 @@ private:
 
     // Pre-computed FFTs — layout: [meas0_L[2*fftSize] | meas0_R[2*fftSize] | …]
     std::vector<float> m_fftData;
+
+    // Protects m_fftData and m_fft against concurrent reads and writes.
+    // prepareFFT() holds an exclusive (write) lock while reallocating m_fftData.
+    // tryBlendHRTF() holds a shared (read) lock; if the exclusive lock is taken
+    // it returns false immediately (non-blocking) so the RT audio thread never waits.
+    //
+    // Stored as unique_ptr so HRTFTable remains movable/assignable (std::shared_mutex
+    // is not movable). Initialised in the constructor. Never null during normal use.
+    mutable std::unique_ptr<std::shared_mutex> m_fftDataMutex;
 
     std::unique_ptr<juce::dsp::FFT> m_fft;
 

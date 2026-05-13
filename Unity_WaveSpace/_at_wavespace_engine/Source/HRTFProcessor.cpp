@@ -15,8 +15,20 @@ void HRTFProcessor::prepare(double sampleRate, int samplesPerBlock)
 
     if (m_table && m_table->isFFTPrepared())
     {
-        const int fftSize = m_table->getFFTSize();
-        const int bufSize = 2 * fftSize;   // JUCE FFT uses 2×N for complex pairs
+        const int fftOrder = m_table->getFFTOrder();
+        const int fftSize  = m_table->getFFTSize();   // == 1 << fftOrder
+        const int bufSize  = 2 * fftSize;
+
+        // Block until olaBlock finishes its current block (at most one callback
+        // duration, typically < 43 ms).  This prevents reallocating work buffers
+        // while the audio thread holds raw pointers into them.
+        std::lock_guard<std::mutex> lock(m_bufferMutex);
+
+        // Create a private FFT instance with the same order as the table.
+        // Owning a separate instance ensures that a concurrent prepareFFT()
+        // call (which rebuilds the table's internal FFT) never invalidates
+        // twiddle factors that are in use by this processor.
+        m_fft = std::make_unique<juce::dsp::FFT>(fftOrder);
 
         m_workBufIn .assign(bufSize, 0.0f);
         m_workBufL  .assign(bufSize, 0.0f);
@@ -84,12 +96,32 @@ void HRTFProcessor::olaBlock(float*       outL,
                                bool         accumulate)
 {
     if (!m_table || !m_table->isFFTPrepared()) return;
-    if (m_workBufIn.empty()) return;
+    if (!m_fft || m_workBufIn.empty()) return;
 
-    const int   fftSize    = m_table->getFFTSize();
-    const int   M          = m_table->getIRLength();
-    const auto& fft        = m_table->getFFT();
-    const int   overlapLen = M - 1;
+    // Non-blocking try_lock: if prepare() is currently reallocating buffers
+    // on another thread, skip this block rather than blocking the RT audio thread.
+    // prepare() holds the lock for at most the allocation time (~microseconds),
+    // so a skipped block here is rare and produces at most a brief silent frame.
+    std::unique_lock<std::mutex> lock(m_bufferMutex, std::try_to_lock);
+    if (!lock) return;
+
+    const int fftSize    = m_fft->getSize();   // authoritative: from our own FFT instance
+    const int M          = m_table->getIRLength();
+    const int overlapLen = M - 1;
+
+    // Guard: if the table was rebuilt with a different block size after our
+    // last prepare() call, the buffer sizes would mismatch the FFT size.
+    // Skip this block; the next prepare() call will realign everything.
+    if ((int)m_workBufIn.size() != 2 * fftSize ||
+        (int)m_workBufL.size()  != 2 * fftSize ||
+        (int)m_workBufR.size()  != 2 * fftSize)
+        return;
+
+    // Bind to this processor's OWN FFT object — never the table's.
+    // If prepareFFT() is called concurrently (HRTF reload), the table's FFT
+    // is destroyed and recreated; using m_table->getFFT() here would give a
+    // dangling reference and crash in butterfly4 / operator*=.
+    const juce::dsp::FFT& fft = *m_fft;
 
     // ── Step 1 : forward FFT of zero-padded input ────────────────────────────
     std::fill(m_workBufIn.begin(), m_workBufIn.end(), 0.0f);
@@ -108,22 +140,17 @@ void HRTFProcessor::olaBlock(float*       outL,
     float alpha;
     m_table->findBracketingIndices(azimuth, elevation, idxLower, idxUpper, alpha);
 
-    const float* hL_lo = m_table->getFFT_L(idxLower);
-    const float* hL_hi = m_table->getFFT_L(idxUpper);
-    const float* hR_lo = m_table->getFFT_R(idxLower);
-    const float* hR_hi = m_table->getFFT_R(idxUpper);
-    const float  oneMinusAlpha = 1.0f - alpha;
-    const int    bufSize = 2 * fftSize;
-
     float* hBlendL = m_workBufOldL.data();
     float* hBlendR = m_workBufOldR.data();
+    const int bufSize = 2 * fftSize;
 
-    // LERP complex IR FFTs — auto-vectorised to NEON/AVX with -O2
-    for (int k = 0; k < bufSize; ++k)
-    {
-        hBlendL[k] = oneMinusAlpha * hL_lo[k] + alpha * hL_hi[k];
-        hBlendR[k] = oneMinusAlpha * hR_lo[k] + alpha * hR_hi[k];
-    }
+    // Blend the two bracketing HRTF bins under a shared lock on m_fftData.
+    // tryBlendHRTF() returns false if prepareFFT() is concurrently reallocating
+    // m_fftData (exclusive lock held).  In that case we output silence for this
+    // block rather than reading a dangling pointer — which was the crash cause.
+    if (!m_table->tryBlendHRTF(idxLower, idxUpper, alpha,
+                                 hBlendL, hBlendR, bufSize))
+        return;
 
     // ── Step 3 : X × H_blend → IFFT ─────────────────────────────────────────
     std::memcpy(m_workBufL.data(), m_workBufIn.data(), bufSize * sizeof(float));

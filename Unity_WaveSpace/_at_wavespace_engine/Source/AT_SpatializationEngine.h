@@ -486,6 +486,11 @@ namespace AT
 
         std::atomic<int> m_hrtfProcessed{0};
 
+        // Number of threads dispatched in the previous audio block.
+        // Used to wait for lingering workers before reusing buffers.
+        // Accessed only from the audio thread — no atomic needed.
+        int m_hrtfPrevCount = 0;
+
         // ============================================================================
         // SIMPLE BINAURAL MODE
         // ============================================================================

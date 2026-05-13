@@ -392,6 +392,56 @@ VS Code with the [CMake Tools extension](https://marketplace.visualstudio.com/it
 }
 ```
 
+#### Native debugging with Visual Studio (Windows)
+
+The `windows-x64-debug` preset compiles the DLL in Debug mode and produces a `.pdb` symbol file alongside the DLL. This enables full C++ source-level debugging of the native engine while Unity is running.
+
+**Step 1 — Build in Debug**
+
+```bash
+cmake --preset windows-x64-debug
+cmake --build --preset windows-x64-debug --config Debug
+```
+
+The post-build step copies both `at_wavespace_engine.dll` and `at_wavespace_engine.pdb` to `Assets/At_WaveSpace/Plugins/Win/`. Unity must be restarted after copying so that it loads the new Debug DLL.
+
+**Step 2 — Open the Visual Studio solution**
+
+```
+Builds/VisualStudio2022/at_wavespace_engine.sln
+```
+
+Make sure the active configuration is **Debug | x64** (top toolbar dropdown).
+
+**Step 3 — Attach the debugger to the running Unity process**
+
+1. Launch Unity and open your scene (do not press Play yet).
+2. In Visual Studio: **Debug → Attach to Process…** (`Ctrl+Alt+P`).
+3. Set *Connection type* to **Local**.
+4. Locate **Unity.exe** in the process list.
+5. In the *Attach to* column click **Select…**, tick **Native code**, confirm.
+6. Click **Attach**.
+
+Set breakpoints anywhere in the C++ source files. Press Play in Unity to trigger the audio callbacks and hit them.
+
+> **Tip:** if *Native code* does not appear in the *Attach to* selector, the **Desktop development with C++** workload may be missing from your Visual Studio installation.
+
+**Alternative — auto-launch Unity from Visual Studio**
+
+This avoids the manual attach step and is useful for catching issues that occur at engine initialisation (before the scene is loaded):
+
+1. Right-click the **at_wavespace_engine** project → **Properties**.
+2. Open **Configuration Properties → Debugging** and set:
+
+| Property | Value |
+|---|---|
+| **Debugger to launch** | Local Windows Debugger |
+| **Command** | `C:\Program Files\Unity\Hub\Editor\<version>\Editor\Unity.exe` |
+| **Command Arguments** | `-projectpath "D:\path\to\Unity_WaveSpace"` |
+| **Debugger Type** | Native Only |
+
+3. Press **F5** — Visual Studio launches Unity with the native debugger active from startup.
+
 #### 5. Refresh Unity
 
 Switch back to Unity and click anywhere in the Project window to trigger an asset refresh.
