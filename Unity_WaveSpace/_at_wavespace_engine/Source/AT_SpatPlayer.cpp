@@ -341,8 +341,12 @@ namespace AT
             
             // Update speaker mask (ensures numActiveSpeakerInMask > 0 when starting in binaural mode).
             m_puSpatializer->setIsInsideAndUpdateSpeakerMask();
-            float numActiveSpeakerInMask = m_puSpatializer->getNumActiveSpeakerInMask();
-            if (numActiveSpeakerInMask == 0) numActiveSpeakerInMask = m_numOutputChannels;
+
+            // In Simple Binaural mode the HRTF already produces a correctly normalised
+            // stereo output — dividing by sqrt(numActiveSpeakerInMask) is meaningless
+            // here and causes abrupt gain steps (audible clicks) whenever the speaker
+            // mask count changes during listener rotation.  Force the factor to 1.0.
+            const float normFactor = 1.0f;
 
             // Distance attenuation: 1 / max(d, minDist)^attenuation — computed once per block.
             const float distanceGain = m_puSpatializer->computeDistanceGain();
@@ -355,9 +359,9 @@ namespace AT
                     m_fadeGain = std::max(0.0f, m_fadeGain - m_fadeStep);
 
                 float leftSample  = m_puBinauralSimpleSpatializer->getSample(0, sampleIndex)
-                                    / std::sqrt(numActiveSpeakerInMask) * fadeGain * distanceGain;
+                                    / normFactor * fadeGain * distanceGain;
                 float rightSample = m_puBinauralSimpleSpatializer->getSample(1, sampleIndex)
-                                    / std::sqrt(numActiveSpeakerInMask) * fadeGain * distanceGain;
+                                    / normFactor * fadeGain * distanceGain;
                 
                 if (bufferToFill.buffer->getNumChannels() > 0)
                     bufferToFill.buffer->addSample(0, bufferToFill.startSample + sampleIndex, leftSample);

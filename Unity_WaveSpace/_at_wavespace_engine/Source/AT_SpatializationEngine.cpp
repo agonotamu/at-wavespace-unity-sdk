@@ -395,7 +395,8 @@ namespace AT
             m_virtualSpeakerPosXSmoother[i].reset(m_sampleRate, GLOBAL_SMOOTHING_TIME_SECONDS);
             m_virtualSpeakerPosYSmoother[i].reset(m_sampleRate, GLOBAL_SMOOTHING_TIME_SECONDS);
             m_virtualSpeakerPosZSmoother[i].reset(m_sampleRate, GLOBAL_SMOOTHING_TIME_SECONDS);
-            m_virtualSpeakerAzimuthSmoother[i].reset(m_sampleRate, GLOBAL_SMOOTHING_TIME_SECONDS);
+            m_virtualSpeakerAzimuthSinSmoother[i].reset(m_sampleRate, GLOBAL_SMOOTHING_TIME_SECONDS);
+            m_virtualSpeakerAzimuthCosSmoother[i].reset(m_sampleRate, GLOBAL_SMOOTHING_TIME_SECONDS);
 
             float initX = m_virtualSpeakerPositionsFlat[i * 3 + 0];
             float initY = m_virtualSpeakerPositionsFlat[i * 3 + 1];
@@ -410,7 +411,9 @@ namespace AT
             m_smoothedSpeakerPosZ[i] = initZ;
 
             float initAzimuth = calculateTargetAzimuthForSpeaker(i);
-            m_virtualSpeakerAzimuthSmoother[i].setCurrentAndTargetValue(initAzimuth);
+            const float initAzRad = initAzimuth * juce::MathConstants<float>::pi / 180.f;
+            m_virtualSpeakerAzimuthSinSmoother[i].setCurrentAndTargetValue(std::sin(initAzRad));
+            m_virtualSpeakerAzimuthCosSmoother[i].setCurrentAndTargetValue(std::cos(initAzRad));
             m_smoothedSpeakerAzimuth[i] = initAzimuth;
         }
     }
@@ -581,9 +584,11 @@ namespace AT
             m_smoothedSpeakerPosX[i] = m_virtualSpeakerPosXSmoother[i].getNextValue();
             m_smoothedSpeakerPosY[i] = m_virtualSpeakerPosYSmoother[i].getNextValue();
             m_smoothedSpeakerPosZ[i] = m_virtualSpeakerPosZSmoother[i].getNextValue();
-            // Advance the dedicated azimuth smoother — targets are set in the two
-            // dirty sections below whenever the listener or speakers move.
-            m_smoothedSpeakerAzimuth[i] = m_virtualSpeakerAzimuthSmoother[i].getNextValue();
+            // Azimuth smoothed via sin/cos to avoid wraparound drift during rotation.
+            const float sinAz = m_virtualSpeakerAzimuthSinSmoother[i].getNextValue();
+            const float cosAz = m_virtualSpeakerAzimuthCosSmoother[i].getNextValue();
+            m_smoothedSpeakerAzimuth[i] = std::atan2(sinAz, cosAz)
+                                          * 180.f / juce::MathConstants<float>::pi;
         }
     }
 
@@ -1046,12 +1051,21 @@ namespace AT
         if (m_listenerTransformDirty.load(std::memory_order_acquire))
         {
             float pos[3], rot[3], fwd[3];
+            bool adopted = false;
             {
-                const juce::SpinLock::ScopedLockType lock(m_positionLock);
+            // tryEnter() returns immediately without spinning if the lock is taken.
+            // The audio thread must NEVER block waiting for the main thread.
+            if (m_positionLock.tryEnter())
+            {
                 std::memcpy(pos, m_pendingListenerPosition, 3 * sizeof(float));
                 std::memcpy(rot, m_pendingListenerRotation, 3 * sizeof(float));
                 std::memcpy(fwd, m_pendingListenerForward,  3 * sizeof(float));
+                m_positionLock.exit();
+                adopted = true;
             }
+            }
+            if (adopted)
+            {
             m_listenerTransformDirty.store(false, std::memory_order_release);
 
             m_listenerPosX     = pos[0]; m_listenerPosY     = pos[1]; m_listenerPosZ     = pos[2];
@@ -1084,25 +1098,37 @@ namespace AT
                                * 180.f / juce::MathConstants<float>::pi;
                     while (az >  180.f) az -= 360.f;
                     while (az < -180.f) az += 360.f;
-                    m_virtualSpeakerAzimuthSmoother[i].setTargetValue(az);
+
+                    // Set sin/cos targets — no wraparound possible, no drift.
+                    const float azRad = az * juce::MathConstants<float>::pi / 180.f;
+                    m_virtualSpeakerAzimuthSinSmoother[i].setTargetValue(std::sin(azRad));
+                    m_virtualSpeakerAzimuthCosSmoother[i].setTargetValue(std::cos(azRad));
                 }
             }
 
             for (auto* p : m_playerSnapshot)
                 if (p && p->getSpatializer())
                     p->getSpatializer()->setListenerTransform(pos, rot, fwd);
+            } // if (adopted)
         }
 
         if (m_speakerTransformDirty.load(std::memory_order_acquire))
         {
-            int count;
+            int count = 0;
+            bool adopted = false;
             {
-                const juce::SpinLock::ScopedLockType lock(m_positionLock);
+            if (m_positionLock.tryEnter())
+            {
                 count = m_pendingSpeakerCount;
                 std::memcpy(m_adoptPosBuf, m_pendingSpeakerPositions, count * 3 * sizeof(float));
                 std::memcpy(m_adoptRotBuf, m_pendingSpeakerRotations, count * 3 * sizeof(float));
                 std::memcpy(m_adoptFwdBuf, m_pendingSpeakerForwards,  count * 3 * sizeof(float));
+                m_positionLock.exit();
+                adopted = true;
             }
+            }
+            if (adopted)
+            {
             m_speakerTransformDirty.store(false, std::memory_order_release);
 
             std::memcpy(m_virtualSpeakerPositionsFlat, m_adoptPosBuf, count * 3 * sizeof(float));
@@ -1132,13 +1158,18 @@ namespace AT
                                * 180.f / juce::MathConstants<float>::pi;
                     while (az >  180.f) az -= 360.f;
                     while (az < -180.f) az += 360.f;
-                    m_virtualSpeakerAzimuthSmoother[i].setTargetValue(az);
+
+                    // Set sin/cos targets — no wraparound possible, no drift.
+                    const float azRad = az * juce::MathConstants<float>::pi / 180.f;
+                    m_virtualSpeakerAzimuthSinSmoother[i].setTargetValue(std::sin(azRad));
+                    m_virtualSpeakerAzimuthCosSmoother[i].setTargetValue(std::cos(azRad));
                 }
             }
 
             for (auto* p : m_playerSnapshot)
                 if (p && p->getSpatializer())
                     p->getSpatializer()->setVirtualSpeakerTransform(m_adoptPosBuf, m_adoptRotBuf, m_adoptFwdBuf, count);
+            } // if (adopted)
         }
 
         // Step 3: Detect mode change request and start the fade-out

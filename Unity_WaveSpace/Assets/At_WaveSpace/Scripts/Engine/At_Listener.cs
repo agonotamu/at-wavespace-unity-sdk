@@ -7,10 +7,12 @@ using System.Runtime.InteropServices;
 public class At_Listener : MonoBehaviour
 {
     private const float GIZMO_RADIUS = 0.17f;
-
+    float time = 0;
     private void Update()
     {
+        time += Time.deltaTime;
         UpdateTransform();
+        
     }
 
     /// <summary>
@@ -19,6 +21,8 @@ public class At_Listener : MonoBehaviour
     /// </summary>
     private void UpdateTransform()
     {
+        
+
         float[] position = new float[3];
         float[] rotation = new float[3];
         float[] forward  = new float[3];
@@ -45,9 +49,14 @@ public class At_Listener : MonoBehaviour
 
         forward[0] = transform.forward.x;
         forward[1] = transform.forward.y;
-        forward[2] = transform.forward.z;
-
-        AT_WS_setListenerTransform(position, rotation, forward);
+        forward[2] = transform.forward.z;        
+        
+        //AT_WS_setListenerTransform(position, rotation, forward);
+        AT_WS_setListenerTransform(
+    new float[] { 0f, 0f, 0f },
+    new float[] { 0f, 0f, 0f },
+    new float[] { 0f, 0f, 1f }
+);
     }
 
 #if UNITY_EDITOR

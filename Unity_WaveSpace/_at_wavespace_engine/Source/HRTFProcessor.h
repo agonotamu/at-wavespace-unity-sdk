@@ -117,10 +117,22 @@ private:
     std::vector<float> m_workBufIn;    ///< 2 * fftSize  — input FFT (shared L/R)
     std::vector<float> m_workBufL;     ///< 2 * fftSize  — convolution result, left
     std::vector<float> m_workBufR;     ///< 2 * fftSize  — convolution result, right
-    std::vector<float> m_workBufOldL;  ///< 2 * fftSize  — H_blend scratch, left
-    std::vector<float> m_workBufOldR;  ///< 2 * fftSize  — H_blend scratch, right
-    std::vector<float> m_overlapL;     ///< fftSize       — OLA tail, left
-    std::vector<float> m_overlapR;     ///< fftSize       — OLA tail, right
+    std::vector<float> m_workBufOldL;  ///< 2 * fftSize  — scratch for overlap recomputation
+    std::vector<float> m_workBufOldR;  ///< 2 * fftSize  — scratch for overlap recomputation
+    std::vector<float> m_overlapL;     ///< irLength-1    — OLA tail, left
+    std::vector<float> m_overlapR;     ///< irLength-1    — OLA tail, right
+
+    // ── Filter-change overlap correction ─────────────────────────────────────
+    // When azimuth changes between blocks, m_overlapL/R was computed with the
+    // old filter. We correct it by re-convolving the last overlapLen input
+    // samples (m_prevInput) with the new filter. Placement: prevInput goes at
+    // the START of the FFT buffer; correct tail is at Y[overlapLen..2*overlapLen-1].
+    std::vector<float> m_prevInput;    ///< last irLength-1 input samples (mono)
+    std::vector<float> m_prevHBlendL;  ///< H_blend spectrum from previous block (left)
+    std::vector<float> m_prevHBlendR;  ///< H_blend spectrum from previous block (right)
+    bool  m_hasPrevHBlend = false;
+    float m_prevAzimuth   = 0.0f;
+    float m_prevElevation = 0.0f;
 
     // Private FFT instance — owns its own twiddle factors so that a concurrent
     // HRTFTable::prepareFFT() call (which destroys and recreates m_table's FFT)

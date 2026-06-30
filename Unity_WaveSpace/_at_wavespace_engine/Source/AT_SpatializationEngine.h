@@ -553,7 +553,17 @@ namespace AT
         juce::LinearSmoothedValue<float> m_virtualSpeakerPosXSmoother[MAX_VIRTUAL_SPEAKERS];
         juce::LinearSmoothedValue<float> m_virtualSpeakerPosYSmoother[MAX_VIRTUAL_SPEAKERS];
         juce::LinearSmoothedValue<float> m_virtualSpeakerPosZSmoother[MAX_VIRTUAL_SPEAKERS];
-        juce::LinearSmoothedValue<float> m_virtualSpeakerAzimuthSmoother[MAX_VIRTUAL_SPEAKERS];
+
+        /// Per-speaker azimuth smoothed via sin/cos components rather than
+        /// the angle itself, to avoid LinearSmoothedValue drift during continuous
+        /// rotation (a scalar angle smoother accumulates unboundedly when the
+        /// listener keeps rotating in the same direction, even with a shortest-path
+        /// delta fix — after one full rotation the internal value is already at
+        /// 360° and grows without bound). Sin and cos are bounded in [-1,1] and
+        /// interpolate correctly through any number of full rotations with no drift.
+        /// m_smoothedSpeakerAzimuth[i] is derived via atan2(sin,cos) in advanceGlobalSmoothers().
+        juce::LinearSmoothedValue<float> m_virtualSpeakerAzimuthSinSmoother[MAX_VIRTUAL_SPEAKERS];
+        juce::LinearSmoothedValue<float> m_virtualSpeakerAzimuthCosSmoother[MAX_VIRTUAL_SPEAKERS];
 
         // Current smoothed listener values (scalars)
         float m_smoothedListenerPosX;

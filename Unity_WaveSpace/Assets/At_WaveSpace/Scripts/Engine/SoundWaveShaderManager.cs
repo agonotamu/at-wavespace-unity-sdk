@@ -28,6 +28,11 @@ public class SoundWaveShaderManager : MonoBehaviour
     public At_Player        player;
     public float            _waveFrequency = 440f;
 
+    [Tooltip("Log-compression strength for the displayed intensity. 0 = linear (original behaviour). " +
+             "Raise this to keep wavefronts visible far from any speaker on large speaker rings, " +
+             "where the raw 1/r² amplitude would otherwise look black almost everywhere.")]
+    public float _logCompression = 0f;
+
     // Public for Inspector visualisation
     [HideInInspector] public Vector4[]    _wavePositions;
     [HideInInspector] public GameObject[] speakers;
@@ -53,6 +58,15 @@ public class SoundWaveShaderManager : MonoBehaviour
     // Same value as the WFS engine (m_secondarySourceSize) for audio/visual coherence.
     private float _secondarySourceSize = 0.3f;
 
+    // Resolved once in Init(), used by ComputeDistanceGain() each frame.
+    private At_Listener _listener;
+
+    // Distance attenuation gain, recomputed every Update() from player.transform,
+    // _listener.transform, player.attenuation and player.minDistance — same formula
+    // as Spatializer::computeDistanceGain() in the audio engine (see ComputeDistanceGain()
+    // below), kept in C# only so no native/DLL change is needed.
+    private float _distanceGain = 1f;
+
     private const int MAX_CHANNEL_COUNT = 1024;
 
     private bool _initialized = false;
@@ -77,6 +91,7 @@ public class SoundWaveShaderManager : MonoBehaviour
     {
         if (master == null) master = FindObjectOfType<At_MasterOutput>();
         if (player == null) player = Find3DPlayer();
+        if (_listener == null) _listener = FindObjectOfType<At_Listener>();
 
         if (master == null || player == null) return;
 
@@ -182,6 +197,8 @@ public class SoundWaveShaderManager : MonoBehaviour
     {
         if (!_initialized) return;
 
+        _distanceGain = ComputeDistanceGain();
+
         int count = master.numVirtualSpeakers;
         for (int i = 0; i < count; i++)
         {
@@ -216,6 +233,70 @@ public class SoundWaveShaderManager : MonoBehaviour
     // ─── Private helpers ──────────────────────────────────────────────────────
 
     /// <summary>
+    /// Distance attenuation gain for the source — same formula as
+    /// Spatializer::computeDistanceGain() in the audio engine (AT_Spatializer.cpp):
+    ///   d       = 3D Euclidean distance from source to listener
+    ///   dClamped = max(d, minDistance)           // no boost below minDistance
+    ///   gain     = (minDistance / dClamped) ^ attenuation
+    ///   gain     = clamp(gain, 0, 1)              // never boost, never negative
+    /// Computed here in C# (not read from the native engine) since every input
+    /// (positions, attenuation, minDistance) is already available on the Unity side.
+    /// </summary>
+    private float ComputeDistanceGain()
+    {
+        if (_listener == null || player.attenuation <= 0f)
+            return 1f;
+
+        float d = Vector3.Distance(player.transform.position, _listener.gameObject.transform.position);
+        float dClamped = Mathf.Max(d, player.minDistance);
+
+        float gain = dClamped > 0f
+            ? Mathf.Pow(player.minDistance / dClamped, player.attenuation)
+            : 1f;
+
+        return Mathf.Clamp01(gain);
+    }
+
+    /// <summary>
+    /// Evaluates the wavefront signal at an arbitrary world-space XZ position, using the
+    /// exact same formula as the compute shader (getValueForSinWaveAtPosition + summation +
+    /// distance gain + log-compression). Lets other scripts (e.g. ambient emission on nearby
+    /// meshes) sample the same visual signal as the plane without reading back the GPU texture.
+    /// </summary>
+    /// <returns>Signed value: positive = "blue" wavefront, negative = "red" wavefront (same convention as the shader).</returns>
+    public float EvaluateWaveAt(Vector3 worldPosition)
+    {
+        if (!_initialized) return 0f;
+
+        float value = 0f;
+        int count = master.numVirtualSpeakers;
+        for (int i = 0; i < count; i++)
+        {
+            float dx = worldPosition.x - _wavePositions[i].x;
+            float dz = worldPosition.z - _wavePositions[i].z;
+            float rRaw = Mathf.Sqrt(dx * dx + dz * dz);
+            float r = Mathf.Sqrt(rRaw * rRaw + _secondarySourceSize * _secondarySourceSize);
+
+            float wave = _wfsAmps[i] * (1f / (r * r))
+                * Mathf.Sin(2f * Mathf.PI * _waveFrequency * (r / 340f + _wfsDelays[i]));
+
+            value += _wfsSpeakerMask[i] * wave;
+        }
+
+        value *= _distanceGain;
+
+        if (_logCompression > 0f)
+        {
+            float sign = value >= 0f ? 1f : -1f;
+            float mag = Mathf.Abs(value);
+            mag = Mathf.Log(1f + _logCompression * mag) / Mathf.Log(1f + _logCompression);
+            value = sign * mag;
+        }
+
+        return value;
+    }
+
+    /// <summary>
     /// Parameters that depend only on the plane's transform.
     /// Called once at Init(); call again manually if the transform changes at runtime.
     /// </summary>
@@ -235,6 +316,10 @@ public class SoundWaveShaderManager : MonoBehaviour
         _computeShader.SetFloat("_waveFrequency",     _waveFrequency);
         // _secondarySourceSize synced with At_MasterOutput.secondarySourceSize (audio engine)
         _computeShader.SetFloat("_secondarySourceSize", _secondarySourceSize);
+        // Distance attenuation gain, recomputed each Update() — see ComputeDistanceGain()
+        _computeShader.SetFloat("_distanceGain", _distanceGain);
+        // Log-compression strength for the displayed intensity (Inspector-editable)
+        _computeShader.SetFloat("_logCompression", _logCompression);
 
         _wavePositionsBuffer.SetData(_wavePositions);
         _wfsAmpsBuffer.SetData(_wfsAmps_v4);

@@ -18,6 +18,21 @@ float _outputChannelCount;
 // When _secondarySourceSize = 0 this degenerates to the original behaviour.
 float _secondarySourceSize;
 
+// Distance attenuation gain for the source, computed in C# by
+// SoundWaveShaderManager.ComputeDistanceGain() using the same formula as
+// Spatializer::computeDistanceGain() in the audio engine. Applied once as a global
+// scalar multiplier on the summed wavefront — matches the audio engine, where this
+// same gain multiplies the player's full output block rather than each speaker term.
+float _distanceGain;
+
+// Log-compression strength for the displayed intensity. With a large speaker ring
+// (e.g. 25 m), the raw 1/r² amplitude spans many orders of magnitude between pixels
+// near a speaker and pixels near the centre of the room — a linear color mapping
+// makes everything but the immediate speaker neighbourhood look black. Mapping the
+// magnitude through log1p(k * mag) / log1p(k) compresses that range so wavefronts
+// stay visible far from any speaker. 0 = no compression (original linear behaviour).
+float _logCompression;
+
 StructuredBuffer<float4> _wavePositions;
 StructuredBuffer<float4> _wfsAmps;
 StructuredBuffer<float4> _wfsDelays;
@@ -57,8 +72,19 @@ void CSMain(uint3 id : SV_DispatchThreadID)
             _wfsDelays[i].x
         );
 
+    // Global distance attenuation, applied once on the summed wavefront —
+    // mirrors SpatPlayer::renderNextBlock, where distanceGain multiplies the
+    // player's full output block rather than each speaker term individually.
+    value *= _distanceGain;
+
+    // Log-compress the magnitude so wavefronts stay visible far from any speaker,
+    // without losing the sign (red = negative, blue = positive — see below).
+    float mag = abs(value);
+    if (_logCompression > 0.0f)
+        mag = log(1.0f + _logCompression * mag) / log(1.0f + _logCompression);
+
     if (value > 0)
-        Result[id.xy] = float4(0, 0, value, 1);
+        Result[id.xy] = float4(0, 0, mag, 1);
     else
-        Result[id.xy] = float4(abs(value), 0, 0, 1);
+        Result[id.xy] = float4(mag, 0, 0, 1);
 }
