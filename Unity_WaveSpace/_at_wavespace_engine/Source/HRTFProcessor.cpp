@@ -30,33 +30,73 @@ void HRTFProcessor::prepare(double sampleRate, int samplesPerBlock)
         // twiddle factors that are in use by this processor.
         m_fft = std::make_unique<juce::dsp::FFT>(fftOrder);
 
-        m_workBufIn  .assign(bufSize, 0.0f);
-        m_workBufL   .assign(bufSize, 0.0f);
-        m_workBufR   .assign(bufSize, 0.0f);
+        m_workBufIn .assign(bufSize, 0.0f);
+        m_workBufL  .assign(bufSize, 0.0f);
+        m_workBufR  .assign(bufSize, 0.0f);
         m_workBufOldL.assign(bufSize, 0.0f);
         m_workBufOldR.assign(bufSize, 0.0f);
-        m_overlapL   .assign(fftSize, 0.0f);
-        m_overlapR   .assign(fftSize, 0.0f);
-        m_prevInput  .assign(static_cast<size_t>(m_table->getIRLength() - 1), 0.0f);
-        m_prevHBlendL.assign(bufSize, 0.0f);
-        m_prevHBlendR.assign(bufSize, 0.0f);
-        m_hasPrevHBlend = false;
+        m_overlapL  .assign(fftSize, 0.0f);
+        m_overlapR  .assign(fftSize, 0.0f);
+
+        // Dual-convolution crossfade state (see header): previous-filter
+        // storage + scratch for the old-filter convolution.
+        m_prevHBlendL .assign(bufSize, 0.0f);
+        m_prevHBlendR .assign(bufSize, 0.0f);
+        m_workBufPrevL.assign(bufSize, 0.0f);
+        m_workBufPrevR.assign(bufSize, 0.0f);
+        m_prevHBlendValid = false;
+        m_prevIdxLower = m_prevIdxUpper = -1;
+        m_prevAlpha = -1.0f;
     }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// clearOverlapTail — lightweight, non-blocking reset of the OLA overlap
+// buffers only (m_overlapL/R). Used when a channel resumes processing after
+// being skipped for several blocks by the amplitude-based HRTF bypass in
+// SpatializationEngine::processBinauralVirtualization(). While skipped,
+// olaBlock() is never called, so the overlap tail is left stale: it still
+// holds the IR tail from whatever azimuth was current when the channel went
+// silent. Re-adding that stale tail on resume produces an audible click,
+// since it gets mixed with the new block computed for the current (possibly
+// very different) azimuth. Clearing it here removes that artefact.
+//
+// Deliberately NOT reusing reset(): reset() touches m_workBufIn/L/R as well,
+// which prepare() may be concurrently resizing under m_bufferMutex during an
+// HRTF reload — calling the full reset() from the audio thread at the wrong
+// moment risks racing that resize. This function only touches the overlap
+// buffers and uses the same non-blocking lock pattern as olaBlock(), so it
+// is safe to call from the audio thread and simply no-ops (silently) if a
+// reload is in progress — in that case the overlap buffers are about to be
+// reallocated by prepare() anyway, so skipping is harmless.
+void HRTFProcessor::clearOverlapTail() noexcept
+{
+    std::unique_lock<std::mutex> lock(m_bufferMutex, std::try_to_lock);
+    if (!lock) return;
+
+    std::fill(m_overlapL.begin(), m_overlapL.end(), 0.0f);
+    std::fill(m_overlapR.begin(), m_overlapR.end(), 0.0f);
+
+    // Also invalidate the stored previous filter so the next block runs a
+    // single convolution with a fresh snap (no crossfade from a stale filter) —
+    // same rationale as clearing the OLA tail itself.
+    m_prevHBlendValid = false;
+    m_prevIdxLower = m_prevIdxUpper = -1;
+    m_prevAlpha = -1.0f;
 }
 
 void HRTFProcessor::reset()
 {
-    std::fill(m_overlapL.begin(),    m_overlapL.end(),    0.0f);
-    std::fill(m_overlapR.begin(),    m_overlapR.end(),    0.0f);
-    std::fill(m_workBufIn.begin(),   m_workBufIn.end(),   0.0f);
-    std::fill(m_workBufL.begin(),    m_workBufL.end(),    0.0f);
-    std::fill(m_workBufR.begin(),    m_workBufR.end(),    0.0f);
-    std::fill(m_workBufOldL.begin(), m_workBufOldL.end(), 0.0f);
-    std::fill(m_workBufOldR.begin(), m_workBufOldR.end(), 0.0f);
-    std::fill(m_prevInput.begin(),   m_prevInput.end(),   0.0f);
-    std::fill(m_prevHBlendL.begin(), m_prevHBlendL.end(), 0.0f);
-    std::fill(m_prevHBlendR.begin(), m_prevHBlendR.end(), 0.0f);
-    m_hasPrevHBlend = false;
+    std::fill(m_overlapL.begin(),        m_overlapL.end(),        0.0f);
+    std::fill(m_overlapR.begin(),        m_overlapR.end(),        0.0f);
+    std::fill(m_workBufIn.begin(),       m_workBufIn.end(),       0.0f);
+    std::fill(m_workBufL.begin(),        m_workBufL.end(),        0.0f);
+    std::fill(m_workBufR.begin(),        m_workBufR.end(),        0.0f);
+    std::fill(m_workBufOldL.begin(),     m_workBufOldL.end(),     0.0f);
+    std::fill(m_workBufOldR.begin(),     m_workBufOldR.end(),     0.0f);
+    m_prevHBlendValid = false;
+    m_prevIdxLower = m_prevIdxUpper = -1;
+    m_prevAlpha = -1.0f;
 }
 
 void HRTFProcessor::setHRTFTable(const HRTFTable* table)
@@ -148,6 +188,7 @@ void HRTFProcessor::olaBlock(float*       outL,
     float alpha;
     m_table->findBracketingIndices(azimuth, elevation, idxLower, idxUpper, alpha);
 
+
     float* hBlendL = m_workBufOldL.data();
     float* hBlendR = m_workBufOldR.data();
     const int bufSize = 2 * fftSize;
@@ -160,7 +201,38 @@ void HRTFProcessor::olaBlock(float*       outL,
                                  hBlendL, hBlendR, bufSize))
         return;
 
-    // ── Step 3 : X × H_blend → IFFT ─────────────────────────────────────────
+    // ── Step 3 : convolution(s) + crossfade ──────────────────────────────────
+    //
+    // The HRTF filter is inherently block-rate: one H_blend per olaBlock()
+    // call, held constant across the block. During continuous motion this
+    // steps the filter at the block rate (≈23.4 Hz @ 2048/48k) — audible as
+    // periodic modulation/clicks in rotation AND translation, since both
+    // change the virtual-speaker azimuths. (A frequency-domain EMA was tried
+    // here before: it shrinks the step size but keeps the step cadence.)
+    //
+    // Fix: when the filter changed since the previous block, convolve with
+    // BOTH filters and crossfade linearly across the block:
+    //
+    //   y[n] = (1 − r[n]) · (x ∗ h_prev)[n]  +  r[n] · (x ∗ h_new)[n],
+    //   r[n] = (n + 1) / numSamples          (reaches exactly 1 at block end)
+    //
+    // The effective filter trajectory becomes piecewise-linear in time —
+    // continuous at every sample, no step at block boundaries. The overlap
+    // tail saved for the next block is the NEW filter's tail (r = 1 at the
+    // boundary, so the new filter is what carries forward); the discarded
+    // part of the old filter's tail is the same second-order residue any
+    // fading convolver accepts, inaudible next to the step it removes.
+    //
+    // When the filter is unchanged (static listener/speakers — bracket pair
+    // AND alpha identical), the single-convolution fast path below is
+    // bit-identical to the original code, so the extra cost only applies
+    // while actually moving.
+    const bool filterChanged = m_prevHBlendValid
+                               && (idxLower != m_prevIdxLower
+                                   || idxUpper != m_prevIdxUpper
+                                   || alpha    != m_prevAlpha);
+
+    // New-filter convolution → m_workBufL/R (always needed).
     std::memcpy(m_workBufL.data(), m_workBufIn.data(), bufSize * sizeof(float));
     complexMultiply(m_workBufL.data(), hBlendL, fftSize);
     fft.performRealOnlyInverseTransform(m_workBufL.data());
@@ -169,54 +241,39 @@ void HRTFProcessor::olaBlock(float*       outL,
     complexMultiply(m_workBufR.data(), hBlendR, fftSize);
     fft.performRealOnlyInverseTransform(m_workBufR.data());
 
-    // ── Step 4 : correct stale overlap tail if filter changed ─────────────────
-    //
-    // m_overlapL/R was saved using the OLD filter (previous block's azimuth).
-    // If the azimuth has changed, that tail is wrong — it creates a discontinuity
-    // at the block boundary → click/scratch during listener rotation.
-    //
-    // Fix: re-convolve the stored previous input samples (m_prevInput, length
-    // overlapLen) with the NEW filter (hBlendL/R already in m_workBufOldL/R).
-    // Placement: prevInput at START of fftSize buffer.
-    // Correct tail: IFFT result at [overlapLen .. 2*overlapLen-1].
-    // Verified by simulation: max error < 1e-15 (machine precision only).
-
-    const bool filterChanged =
-        m_hasPrevHBlend &&
-        (std::abs(azimuth   - m_prevAzimuth)   > 0.001f ||
-         std::abs(elevation - m_prevElevation) > 0.001f);
-
-    if (filterChanged && (int)m_prevInput.size() == overlapLen && overlapLen > 0)
+    if (filterChanged)
     {
-        // FFT of prevInput placed at [0..overlapLen-1], rest zero-padded to fftSize.
-        std::fill(m_workBufIn.begin(), m_workBufIn.end(), 0.0f);
-        std::memcpy(m_workBufIn.data(), m_prevInput.data(),
-                    static_cast<size_t>(overlapLen) * sizeof(float));
-        fft.performRealOnlyForwardTransform(m_workBufIn.data());
+        // Old-filter convolution → m_workBufPrevL/R.
+        std::memcpy(m_workBufPrevL.data(), m_workBufIn.data(), bufSize * sizeof(float));
+        complexMultiply(m_workBufPrevL.data(), m_prevHBlendL.data(), fftSize);
+        fft.performRealOnlyInverseTransform(m_workBufPrevL.data());
 
-        // Left: convolve with new filter (hBlendL already computed above)
-        std::memcpy(m_workBufOldL.data(), m_workBufIn.data(), bufSize * sizeof(float));
-        complexMultiply(m_workBufOldL.data(), hBlendL, fftSize);
-        fft.performRealOnlyInverseTransform(m_workBufOldL.data());
+        std::memcpy(m_workBufPrevR.data(), m_workBufIn.data(), bufSize * sizeof(float));
+        complexMultiply(m_workBufPrevR.data(), m_prevHBlendR.data(), fftSize);
+        fft.performRealOnlyInverseTransform(m_workBufPrevR.data());
 
-        // Right: convolve with new filter
-        std::memcpy(m_workBufOldR.data(), m_workBufIn.data(), bufSize * sizeof(float));
-        complexMultiply(m_workBufOldR.data(), hBlendR, fftSize);
-        fft.performRealOnlyInverseTransform(m_workBufOldR.data());
-
-        // Correct overlap tail is at [overlapLen .. 2*overlapLen-1] of the IFFT result
-        for (int k = 0; k < overlapLen; ++k)
+        // Crossfade old → new in place into m_workBufL/R over the audible part
+        // of the block, so Steps 4/5 below need no special casing. The tail
+        // region [numSamples, fftSize) keeps the pure new-filter result.
+        const float invN = 1.0f / static_cast<float>(numSamples);
+        for (int n = 0; n < numSamples; ++n)
         {
-            m_overlapL[k] = m_workBufOldL[overlapLen + k];
-            m_overlapR[k] = m_workBufOldR[overlapLen + k];
+            const float r = static_cast<float>(n + 1) * invN;
+            const float s = 1.0f - r;
+            m_workBufL[n] = s * m_workBufPrevL[n] + r * m_workBufL[n];
+            m_workBufR[n] = s * m_workBufPrevR[n] + r * m_workBufR[n];
         }
-
-        // Restore m_workBufIn for the forward FFT of the current block
-        // (already consumed by step 3, so we need to recompute it for step 5 prevInput save)
-        // Actually m_workBufIn was overwritten — but step 5 only needs src[], not m_workBufIn.
     }
 
-    // ── Step 5 : overlap-add output ───────────────────────────────────────────
+    // Store this block's filter as "previous" for the next block.
+    std::memcpy(m_prevHBlendL.data(), hBlendL, static_cast<size_t>(bufSize) * sizeof(float));
+    std::memcpy(m_prevHBlendR.data(), hBlendR, static_cast<size_t>(bufSize) * sizeof(float));
+    m_prevHBlendValid = true;
+    m_prevIdxLower = idxLower;
+    m_prevIdxUpper = idxUpper;
+    m_prevAlpha    = alpha;
+
+    // ── Step 4 : overlap-add output ──────────────────────────────────────────
     if (accumulate)
     {
         for (int n = 0; n < numSamples; ++n)
@@ -234,37 +291,14 @@ void HRTFProcessor::olaBlock(float*       outL,
         }
     }
 
-    // ── Step 6 : save state for next block ────────────────────────────────────
+    // ── Step 5 : save overlap tail for next block ─────────────────────────────
     if (overlapLen > 0)
     {
-        // New overlap tail from current block
         std::memcpy(m_overlapL.data(), m_workBufL.data() + numSamples,
                     static_cast<size_t>(overlapLen) * sizeof(float));
         std::memcpy(m_overlapR.data(), m_workBufR.data() + numSamples,
                     static_cast<size_t>(overlapLen) * sizeof(float));
-
-        // Save last overlapLen input samples for next potential filter change
-        if (numSamples >= overlapLen)
-        {
-            std::memcpy(m_prevInput.data(), src + numSamples - overlapLen,
-                        static_cast<size_t>(overlapLen) * sizeof(float));
-        }
-        else
-        {
-            const int keep = overlapLen - numSamples;
-            std::memmove(m_prevInput.data(), m_prevInput.data() + numSamples,
-                         static_cast<size_t>(keep) * sizeof(float));
-            std::memcpy(m_prevInput.data() + keep, src,
-                        static_cast<size_t>(numSamples) * sizeof(float));
-        }
     }
-
-    // Save current filter and azimuth for next block
-    std::memcpy(m_prevHBlendL.data(), hBlendL, bufSize * sizeof(float));
-    std::memcpy(m_prevHBlendR.data(), hBlendR, bufSize * sizeof(float));
-    m_prevAzimuth   = azimuth;
-    m_prevElevation = elevation;
-    m_hasPrevHBlend = true;
 }
 
 void HRTFProcessor::processAndAccumulate(juce::AudioBuffer<float>& outputBuffer,

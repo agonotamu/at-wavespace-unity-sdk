@@ -193,9 +193,30 @@ namespace AT
         void getListenerForward(float& x, float& y, float& z) const;
         
         /**
-         * @brief Get the number of active channel in the speaker mask
+         * @brief Get the number of active channel in the speaker mask (raw, unsmoothed).
          */
         float getNumActiveSpeakerInMask();
+
+        /**
+         * @brief Advances the smoothed active-speaker-count normalization by one
+         * sample and returns its current value.
+         *
+         * m_numActiveSpeakerInMask (used as 1/sqrt(count) to normalise output
+         * level so the perceived loudness doesn't depend on how many speakers
+         * are summed) is recomputed every block/sample from raw mask geometry and
+         * can jump abruptly — most notably at startup, where the first block(s)
+         * fall back to the full channel count (no geometry settled yet) before
+         * the real mask count kicks in. An unsmoothed divisor change of e.g.
+         * sqrt(64) -> sqrt(4) is an instantaneous ~4x (12 dB) gain step applied
+         * to a continuous signal — an audible click, not just a loudness change.
+         *
+         * This must be called exactly once per audio SAMPLE (not per block, not
+         * per channel) so the ramp advances at the correct rate. Used by both the
+         * WFS path (spatialize()) and the Simple Binaural path
+         * (SpatPlayer::processAndAdd()), so both share one smoothed value rather
+         * than each recomputing/normalizing independently.
+         */
+        float advanceAndGetSmoothedNumActiveSpeakerInMask();
 
         /**
          * @brief Computes the distance attenuation gain for the current source position.
@@ -324,6 +345,40 @@ namespace AT
          */
         juce::LinearSmoothedValue<float> m_wfsMaxDelaySmoother;
         juce::LinearSmoothedValue<float> m_wfsMinDelaySmoother;
+
+        /**
+         * @brief Smoothed version of the active-speaker-count normalization divisor.
+         *
+         * m_numActiveSpeakerInMask is recomputed every block/sample from raw mask
+         * geometry and can jump discontinuously (e.g. startup fallback count ->
+         * real settled count). Smoothing it here — rather than at each call site —
+         * means the WFS path (spatialize()) and the Simple Binaural path
+         * (SpatPlayer::processAndAdd()) share one click-free, consistent value
+         * instead of each reading the raw count independently.
+         *
+         * Target is set in setIsInsideAndUpdateSpeakerMask() whenever the raw
+         * count is recomputed; advanced/read via
+         * advanceAndGetSmoothedNumActiveSpeakerInMask(), which callers must invoke
+         * exactly once per audio sample.
+         */
+        juce::LinearSmoothedValue<float> m_numActiveSpeakerInMaskSmoother;
+
+        /**
+         * @brief Cached, once-per-sample-advanced value of
+         * m_numActiveSpeakerInMaskSmoother, used by the WFS path.
+         *
+         * advanceSourceSmoothers() advances the smoother exactly once per sample
+         * and stores the result here; spatialize() (called once per OUTPUT
+         * CHANNEL, i.e. multiple times per sample) reads this cached value rather
+         * than advancing the smoother itself, which would advance it once per
+         * channel instead of once per sample.
+         *
+         * The Simple Binaural path does not use this cache: it calls
+         * advanceAndGetSmoothedNumActiveSpeakerInMask() directly, once per sample,
+         * from its own per-sample loop in SpatPlayer::processAndAdd().
+         */
+        float m_smoothedNumActiveSpeakerInMask = 1.0f;
+
                 
         /**
          * @brief Reference to the SpatPlayer instance that owns this spatializer
@@ -436,5 +491,21 @@ namespace AT
         
         juce::LinearSmoothedValue<float> m_sourcePosXSmoother;
         juce::LinearSmoothedValue<float> m_sourcePosZSmoother;
+
+        // Same rationale as SpatializationEngine's m_hasReceivedFirstListenerTransform
+        // / m_hasReceivedFirstSpeakerTransform. m_sourcePosXSmoother/Z are seeded
+        // at (0,0) in the constructor; the first real source position only ever
+        // reaches them via updateSourceParametersTarget()'s setTargetValue() call
+        // (ramp, never snap). If the source's real position is on the other side
+        // of the array's inside/outside boundary from (0,0), the smoothed source
+        // position can cross that boundary mid-ramp, flipping the WFS mask
+        // geometric classification (negativeDotCount == m_numOutputChannels) and
+        // the active-speaker count discontinuously partway through the ramp —
+        // confirmed via [CLICK-DEBUG] instrumentation as the cause of an extended
+        // (~340 ms) silent gap at startup, with output only appearing once the
+        // boundary crossing settles. Snapping on the first call removes this
+        // entirely: the source starts at its real position immediately, so no
+        // mid-ramp boundary crossing can occur.
+        bool m_hasReceivedFirstSourceTransform = false;
     };
 }

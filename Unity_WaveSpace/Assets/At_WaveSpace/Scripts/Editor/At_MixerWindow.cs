@@ -246,6 +246,10 @@ public class At_MixerWindow : EditorWindow
         }
         GUILayout.Label($"{player.numChannelsInAudioFile}ch", EditorStyles.miniLabel);
 
+        // ── Minimum Distance / Attenuation ─────────────────────────────────
+        DrawCompactFloat("d", state.minDistance,  0f, 100f, v => { state.minDistance  = v; player.minDistance  = v; At_AudioEngineUtils.SaveAllState(SceneManager.GetActiveScene().name); });
+        DrawCompactFloat("a", state.attenuation,  0f,   4f, v => { state.attenuation  = v; player.attenuation  = v; At_AudioEngineUtils.SaveAllState(SceneManager.GetActiveScene().name); });
+
         GUILayout.Space(2);
         if (player.isPlaying)
         {
@@ -326,6 +330,20 @@ public class At_MixerWindow : EditorWindow
                 GUI.DrawTextureWithTexCoords(pos, meterOn, uv);
             }
         }
+    }
+    /// <summary>One-line label + clamped float field, minimal footprint.</summary>
+    private void DrawCompactFloat(string label, float value, float min, float max,
+        System.Action<float> onChange)
+    {
+        EditorGUILayout.BeginHorizontal();
+        GUILayout.Label(label, EditorStyles.miniLabel, GUILayout.Width(8));
+        float newVal = EditorGUILayout.FloatField(value, EditorStyles.miniTextField,
+            GUILayout.Width(STRIP_WIDTH - 12));
+        EditorGUILayout.EndHorizontal();
+
+        newVal = Mathf.Clamp(newVal, min, max);
+        if (!Mathf.Approximately(newVal, value))
+            try { onChange(newVal); } catch { }
     }
     #endregion
 }

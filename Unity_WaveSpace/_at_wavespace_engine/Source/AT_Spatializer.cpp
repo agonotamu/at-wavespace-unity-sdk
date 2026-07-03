@@ -131,11 +131,56 @@ namespace AT
 
         m_wfsMinDelaySmoother.reset(sampleRate, SMOOTHING_TIME_SECONDS);
         m_wfsMinDelaySmoother.setCurrentAndTargetValue(0.0f);
+
+        // Seed at the full channel count, matching setIsInsideAndUpdateSpeakerMask()'s
+        // own fallback (m_numActiveSpeakerInMask == 0 -> m_numOutputChannels) for the
+        // very first block(s) before any real mask geometry has been computed. This
+        // way there is no jump at startup between "seed value" and "first fallback
+        // value" — only the later, real transition (fallback -> settled mask count)
+        // gets smoothed, which is exactly the artefact this fixes.
+        m_numActiveSpeakerInMaskSmoother.reset(sampleRate, SMOOTHING_TIME_SECONDS);
+        m_numActiveSpeakerInMaskSmoother.setCurrentAndTargetValue(
+            static_cast<float>(m_numOutputChannels));
     }
 
     void Spatializer::setIsInsideAndUpdateSpeakerMask()
     {
-        
+        // Skip classification entirely until the engine has adopted at least one
+        // REAL listener transform from Unity. Before that, m_pListenerPosition
+        // (this Spatializer's raw copy, set via setListenerTransform()) is still
+        // at its construction-time default (typically (0,0,0)) — not because any
+        // smoother is mid-ramp, but because no real data has reached this
+        // player yet (a startup SEQUENCING gap, confirmed via [CLICK-DEBUG] to
+        // last up to ~21 audio blocks / ~900 ms on some runs, non-deterministic
+        // since it depends on Unity's main-thread frame timing).
+        //
+        // Computing dotListener with a listener-at-origin produces a
+        // geometrically WRONG but perfectly "valid-looking" classification,
+        // which then has to be corrected — often abruptly — the moment real
+        // data finally arrives. Smoothing/snapping that correction (as the
+        // other startup fixes in this file do for position smoothers) cannot
+        // remove the artefact here, because the problem isn't an unsmoothed
+        // transition between two valid states — it's that one of the states
+        // was never valid to begin with. Skipping the computation and holding
+        // the same safe, all-active fallback (matching the smoother's own seed
+        // value and the existing m_isWfsSpeakerMask==false fallback below) means
+        // there is nothing to "correct" once real data arrives: the FIRST real
+        // computation already starts from accurate geometry.
+        if (m_pSpatializationEngine != nullptr
+            && !m_pSpatializationEngine->hasReceivedFirstListenerTransform())
+        {
+            m_isInside              = false;
+            m_insideBlend           = 0.0f;
+            m_numActiveSpeakerInMask = m_numOutputChannels;
+            for (int i = 0; i < m_numOutputChannels; ++i)
+            {
+                m_wfsSpeakerMask[i]        = 1.0f;
+                m_workBufferOutsideMask[i] = 1.0f;
+            }
+            m_numActiveSpeakerInMaskSmoother.setTargetValue(static_cast<float>(m_numOutputChannels));
+            return;
+        }
+
         int negativeDotCount = 0;
         m_numActiveSpeakerInMask = 0;
             
@@ -277,6 +322,18 @@ namespace AT
             m_insideBlend = 0.0f;
         }
 
+        // Update the normalization smoother's target from the raw count just
+        // computed above. Same fallback as the consuming code paths used to do
+        // individually (0 active -> full channel count) so the smoother always
+        // has a sane, non-zero target — but now centralised here, and smoothed,
+        // instead of each call site applying its own raw/unsmoothed fallback.
+        const float newTarget = (m_numActiveSpeakerInMask > 0)
+            ? static_cast<float>(m_numActiveSpeakerInMask)
+            : static_cast<float>(m_numOutputChannels);
+
+
+        m_numActiveSpeakerInMaskSmoother.setTargetValue(newTarget);
+
     }
 
     void Spatializer::udpateWfsGainAndDelay()
@@ -394,7 +451,8 @@ namespace AT
                     }
 
                     m_wfsGainSmoothers[i].setTargetValue(gain);
-                }
+
+                            }
                 else
                 {
                     // Degenerate case: source sits exactly on this speaker.
@@ -474,8 +532,26 @@ namespace AT
 
     void Spatializer::updateSourceParametersTarget()
     {
-        m_sourcePosXSmoother.setTargetValue(m_pSourcePosition[0]);
-        m_sourcePosZSmoother.setTargetValue(m_pSourcePosition[2]);
+        // First real call: snap instantly instead of ramping. See
+        // m_hasReceivedFirstSourceTransform declaration (header) for the full
+        // rationale — without this, the smoothed source position can cross the
+        // array's inside/outside geometric boundary mid-ramp (since it starts
+        // from a (0,0) seed, not the real position), flipping the WFS mask
+        // classification partway through and producing an extended silent gap
+        // at startup, confirmed via diagnostic instrumentation.
+        if (!m_hasReceivedFirstSourceTransform)
+        {
+            m_sourcePosXSmoother.setCurrentAndTargetValue(m_pSourcePosition[0]);
+            m_sourcePosZSmoother.setCurrentAndTargetValue(m_pSourcePosition[2]);
+            m_sourcePosX = m_pSourcePosition[0];
+            m_sourcePosZ = m_pSourcePosition[2];
+            m_hasReceivedFirstSourceTransform = true;
+        }
+        else
+        {
+            m_sourcePosXSmoother.setTargetValue(m_pSourcePosition[0]);
+            m_sourcePosZSmoother.setTargetValue(m_pSourcePosition[2]);
+        }
 
         for (int i = 0; i < m_numOutputChannels; i++)
         {
@@ -490,6 +566,15 @@ namespace AT
         
         setIsInsideAndUpdateSpeakerMask();
         udpateWfsGainAndDelay();
+
+        // Once per sample (this function is the WFS path's single per-sample
+        // entry point — spatialize() itself is called once per OUTPUT CHANNEL,
+        // so it must read this cached value rather than advance the smoother).
+        // Routed through advanceAndGetSmoothedNumActiveSpeakerInMask() (rather
+        // than calling m_numActiveSpeakerInMaskSmoother.getNextValue() directly)
+        // so the WFS path shares the same diagnostic logging as the Simple
+        // Binaural path's call site.
+        m_smoothedNumActiveSpeakerInMask = advanceAndGetSmoothedNumActiveSpeakerInMask();
     }
 
     float Spatializer::spatialize(float inputSample, int indexChannel, bool updateReadPointer)
@@ -536,12 +621,12 @@ namespace AT
 
         
         float outputSample = 0.0f;
-        if (m_numActiveSpeakerInMask != 0)
+        if (m_smoothedNumActiveSpeakerInMask > 0.0f)
         {
             outputSample = delayedSample
                          * smoothedGain
                          * smoothedMask
-                         / std::sqrt((float)m_numActiveSpeakerInMask);
+                         / std::sqrt(m_smoothedNumActiveSpeakerInMask);
         }
         
         return outputSample;
@@ -703,6 +788,11 @@ namespace AT
     float Spatializer::getNumActiveSpeakerInMask()
     {
         return m_numActiveSpeakerInMask;
+    }
+
+    float Spatializer::advanceAndGetSmoothedNumActiveSpeakerInMask()
+    {
+        return m_numActiveSpeakerInMaskSmoother.getNextValue();
     }
 
     float Spatializer::computeDistanceGain() const

@@ -197,6 +197,13 @@ namespace AT
         LOG("Physical output channels: " << outputChannels
             << (m_isBinauralVirtualization ? " (BINAURAL MODE)" : ""));
 
+        // Re-arm the first-transform snap and the startup geometry gate for
+        // this (possibly repeated) setup. Consumed by the audio thread at the
+        // top of Step 0 — do NOT touch m_hasReceivedFirst* directly here, they
+        // are audio-thread-owned. See m_startupGateOpen declaration (header)
+        // for the full rationale, incl. the stuck-after-second-setup() bug.
+        m_resetGeometryStateRequested.store(true, std::memory_order_release);
+
         m_deviceManager.addAudioCallback(m_puPlayer.get());
     }
 
@@ -395,8 +402,7 @@ namespace AT
             m_virtualSpeakerPosXSmoother[i].reset(m_sampleRate, GLOBAL_SMOOTHING_TIME_SECONDS);
             m_virtualSpeakerPosYSmoother[i].reset(m_sampleRate, GLOBAL_SMOOTHING_TIME_SECONDS);
             m_virtualSpeakerPosZSmoother[i].reset(m_sampleRate, GLOBAL_SMOOTHING_TIME_SECONDS);
-            m_virtualSpeakerAzimuthSinSmoother[i].reset(m_sampleRate, GLOBAL_SMOOTHING_TIME_SECONDS);
-            m_virtualSpeakerAzimuthCosSmoother[i].reset(m_sampleRate, GLOBAL_SMOOTHING_TIME_SECONDS);
+            m_virtualSpeakerAzimuthSmoother[i].reset(m_sampleRate, GLOBAL_SMOOTHING_TIME_SECONDS);
 
             float initX = m_virtualSpeakerPositionsFlat[i * 3 + 0];
             float initY = m_virtualSpeakerPositionsFlat[i * 3 + 1];
@@ -411,9 +417,7 @@ namespace AT
             m_smoothedSpeakerPosZ[i] = initZ;
 
             float initAzimuth = calculateTargetAzimuthForSpeaker(i);
-            const float initAzRad = initAzimuth * juce::MathConstants<float>::pi / 180.f;
-            m_virtualSpeakerAzimuthSinSmoother[i].setCurrentAndTargetValue(std::sin(initAzRad));
-            m_virtualSpeakerAzimuthCosSmoother[i].setCurrentAndTargetValue(std::cos(initAzRad));
+            m_virtualSpeakerAzimuthSmoother[i].setCurrentAndTargetValue(initAzimuth);
             m_smoothedSpeakerAzimuth[i] = initAzimuth;
         }
     }
@@ -584,11 +588,9 @@ namespace AT
             m_smoothedSpeakerPosX[i] = m_virtualSpeakerPosXSmoother[i].getNextValue();
             m_smoothedSpeakerPosY[i] = m_virtualSpeakerPosYSmoother[i].getNextValue();
             m_smoothedSpeakerPosZ[i] = m_virtualSpeakerPosZSmoother[i].getNextValue();
-            // Azimuth smoothed via sin/cos to avoid wraparound drift during rotation.
-            const float sinAz = m_virtualSpeakerAzimuthSinSmoother[i].getNextValue();
-            const float cosAz = m_virtualSpeakerAzimuthCosSmoother[i].getNextValue();
-            m_smoothedSpeakerAzimuth[i] = std::atan2(sinAz, cosAz)
-                                          * 180.f / juce::MathConstants<float>::pi;
+            // Advance the dedicated azimuth smoother — targets are set in the two
+            // dirty sections below whenever the listener or speakers move.
+            m_smoothedSpeakerAzimuth[i] = m_virtualSpeakerAzimuthSmoother[i].getNextValue();
         }
     }
 
@@ -974,9 +976,12 @@ namespace AT
         
         // ── Near-field ILD correction ───────────────────────
         // Applied in-place on m_binauralTemp before copy-out.
-        // processStereo() is a no-op when m_bypass=true (r_virtual >= r_ref
-        // or nearly frontal source), so the atomic load is the only cost
-        // when correction is disabled.
+        // processStereo() always runs its per-sample loop now (even when
+        // the geometric bypass condition is met, it just reduces to y=x) —
+        // this keeps the filter's internal state continuously fresh so
+        // there's no discontinuity when the source leaves the bypass zone.
+        // See AT_NearFieldCorrection.h history note for why the previous
+        // early-return caused audible cuts around azimuth 0.
         if (m_isNearFieldCorrection.load(std::memory_order_relaxed))
         {
             m_nearFieldCorrection.processStereo(
@@ -1048,37 +1053,72 @@ namespace AT
         // setTargetValue() and per-Spatializer writes all happen here, serialised
         // with getNextValue() which also runs on the audio thread — eliminates the
         // LinearSmoothedValue data race that causes glitches on any movement.
+
+        // Consume a pending geometry-state reset (posted by setup()) FIRST, so
+        // that any transform staged before/during setup() is treated as a
+        // "first" transform again (snap, not ramp) and the startup gate re-arms.
+        if (m_resetGeometryStateRequested.exchange(false, std::memory_order_acq_rel))
+        {
+            m_hasReceivedFirstListenerTransform = false;
+            m_hasReceivedFirstSpeakerTransform  = false;
+            m_startupGateOpen         = false;
+            m_startupGateBlocksWaited = 0;
+            LOG("Audio thread: geometry state reset (setup) — awaiting first transforms");
+        }
+
         if (m_listenerTransformDirty.load(std::memory_order_acquire))
         {
             float pos[3], rot[3], fwd[3];
-            bool adopted = false;
             {
-            // tryEnter() returns immediately without spinning if the lock is taken.
-            // The audio thread must NEVER block waiting for the main thread.
-            if (m_positionLock.tryEnter())
-            {
+                const juce::SpinLock::ScopedLockType lock(m_positionLock);
                 std::memcpy(pos, m_pendingListenerPosition, 3 * sizeof(float));
                 std::memcpy(rot, m_pendingListenerRotation, 3 * sizeof(float));
                 std::memcpy(fwd, m_pendingListenerForward,  3 * sizeof(float));
-                m_positionLock.exit();
-                adopted = true;
             }
-            }
-            if (adopted)
-            {
             m_listenerTransformDirty.store(false, std::memory_order_release);
 
             m_listenerPosX     = pos[0]; m_listenerPosY     = pos[1]; m_listenerPosZ     = pos[2];
             m_listenerForwardX = fwd[0]; m_listenerForwardY = fwd[1]; m_listenerForwardZ = fwd[2];
 
-            m_listenerPosXSmoother.setTargetValue(m_listenerPosX);
-            m_listenerPosYSmoother.setTargetValue(m_listenerPosY);
-            m_listenerPosZSmoother.setTargetValue(m_listenerPosZ);
-            m_listenerForwardXSmoother.setTargetValue(m_listenerForwardX);
-            m_listenerForwardYSmoother.setTargetValue(m_listenerForwardY);
-            m_listenerForwardZSmoother.setTargetValue(m_listenerForwardZ);
+            // First real transform from Unity: snap instantly instead of ramping.
+            // The smoothers were seeded at setup() using default (pre-Unity) listener
+            // data, so this first update can represent an arbitrarily large jump —
+            // ramping it over GLOBAL_SMOOTHING_TIME_SECONDS (50 ms) would sweep the
+            // azimuth at a rate far exceeding any physical rotation speed (a 180°
+            // gap alone is already 3600°/s), producing the exact same click signature
+            // as fast manual rotation while the listener never actually moved.
+            // There is no audio continuity to protect yet at this point (this is the
+            // very first transform), so an instant snap is inaudible and safe.
+            const bool isFirstTransform = !m_hasReceivedFirstListenerTransform;
+            if (isFirstTransform)
+            {
+                m_listenerPosXSmoother.setCurrentAndTargetValue(m_listenerPosX);
+                m_listenerPosYSmoother.setCurrentAndTargetValue(m_listenerPosY);
+                m_listenerPosZSmoother.setCurrentAndTargetValue(m_listenerPosZ);
+                m_listenerForwardXSmoother.setCurrentAndTargetValue(m_listenerForwardX);
+                m_listenerForwardYSmoother.setCurrentAndTargetValue(m_listenerForwardY);
+                m_listenerForwardZSmoother.setCurrentAndTargetValue(m_listenerForwardZ);
+                m_smoothedListenerPosX     = m_listenerPosX;
+                m_smoothedListenerPosY     = m_listenerPosY;
+                m_smoothedListenerPosZ     = m_listenerPosZ;
+                m_smoothedListenerForwardX = m_listenerForwardX;
+                m_smoothedListenerForwardY = m_listenerForwardY;
+                m_smoothedListenerForwardZ = m_listenerForwardZ;
+                m_hasReceivedFirstListenerTransform = true;
+            }
+            else
+            {
+                m_listenerPosXSmoother.setTargetValue(m_listenerPosX);
+                m_listenerPosYSmoother.setTargetValue(m_listenerPosY);
+                m_listenerPosZSmoother.setTargetValue(m_listenerPosZ);
+                m_listenerForwardXSmoother.setTargetValue(m_listenerForwardX);
+                m_listenerForwardYSmoother.setTargetValue(m_listenerForwardY);
+                m_listenerForwardZSmoother.setTargetValue(m_listenerForwardZ);
+            }
 
-            updateNearFieldCorrectionGeometry();
+            // NOTE: NFC geometry is no longer recomputed here directly — see the
+            // unconditional per-block adoption/recompute block right after this
+            // listener-transform-dirty block closes.
 
             // Update azimuth smoother targets from the NEW raw listener transform.
             // Uses raw values (not smoothed arrays) because smoothers haven't advanced yet.
@@ -1099,46 +1139,108 @@ namespace AT
                     while (az >  180.f) az -= 360.f;
                     while (az < -180.f) az += 360.f;
 
-                    // Set sin/cos targets — no wraparound possible, no drift.
-                    const float azRad = az * juce::MathConstants<float>::pi / 180.f;
-                    m_virtualSpeakerAzimuthSinSmoother[i].setTargetValue(std::sin(azRad));
-                    m_virtualSpeakerAzimuthCosSmoother[i].setTargetValue(std::cos(azRad));
+                    // Same rationale as above: snap rather than ramp on the first
+                    // transform so the per-speaker HRTF azimuth doesn't sweep through
+                    // many bins in 50 ms, which is exactly the artefact that produces
+                    // audible clicks during fast manual rotation.
+                    if (isFirstTransform)
+                    {
+                        m_virtualSpeakerAzimuthSmoother[i].setCurrentAndTargetValue(az);
+                        m_smoothedSpeakerAzimuth[i] = az;
+                    }
+                    else
+                    {
+                        m_virtualSpeakerAzimuthSmoother[i].setTargetValue(az);
+                    }
                 }
             }
 
             for (auto* p : m_playerSnapshot)
                 if (p && p->getSpatializer())
                     p->getSpatializer()->setListenerTransform(pos, rot, fwd);
-            } // if (adopted)
         }
+
+        // -- Adopt staged NFC source position / reference params (audio thread
+        //    only) and recompute geometry once per block. Replaces the previous
+        //    direct calls to updateNearFieldCorrectionGeometry() from the main
+        //    thread in setPlayerTransform()/setIsNearFieldCorrection()/
+        //    setNearFieldCorrectionRRef(), which raced with m_listenerPosX/Y/Z
+        //    (audio-thread-owned) and m_nfcSourcePosX/Y/Z (previously unprotected).
+        //    Cheap even when nothing changed (a few trig ops), so it runs
+        //    unconditionally rather than behind its own dirty flag.
+        if (m_nfcSourceDirty.load(std::memory_order_acquire))
+        {
+            float srcPos[3];
+            {
+                const juce::SpinLock::ScopedLockType lock(m_positionLock);
+                std::memcpy(srcPos, m_pendingNfcSourcePosition, 3 * sizeof(float));
+            }
+            m_nfcSourceDirty.store(false, std::memory_order_release);
+            m_nfcSourcePosX = srcPos[0];
+            m_nfcSourcePosY = srcPos[1];
+            m_nfcSourcePosZ = srcPos[2];
+        }
+
+        if (m_nfcRefParamsDirty.load(std::memory_order_acquire))
+        {
+            float rRef, headRadius;
+            {
+                const juce::SpinLock::ScopedLockType lock(m_positionLock);
+                rRef       = m_pendingNfcRRef;
+                headRadius = m_pendingNfcHeadRadius;
+            }
+            m_nfcRefParamsDirty.store(false, std::memory_order_release);
+            m_nfcRRef       = rRef;
+            m_nfcHeadRadius = headRadius;
+        }
+
+        if (m_nfcResetRequested.exchange(false, std::memory_order_acq_rel))
+            m_nearFieldCorrection.reset();
+
+        updateNearFieldCorrectionGeometry();
 
         if (m_speakerTransformDirty.load(std::memory_order_acquire))
         {
-            int count = 0;
-            bool adopted = false;
+            int count;
             {
-            if (m_positionLock.tryEnter())
-            {
+                const juce::SpinLock::ScopedLockType lock(m_positionLock);
                 count = m_pendingSpeakerCount;
                 std::memcpy(m_adoptPosBuf, m_pendingSpeakerPositions, count * 3 * sizeof(float));
                 std::memcpy(m_adoptRotBuf, m_pendingSpeakerRotations, count * 3 * sizeof(float));
                 std::memcpy(m_adoptFwdBuf, m_pendingSpeakerForwards,  count * 3 * sizeof(float));
-                m_positionLock.exit();
-                adopted = true;
             }
-            }
-            if (adopted)
-            {
             m_speakerTransformDirty.store(false, std::memory_order_release);
 
             std::memcpy(m_virtualSpeakerPositionsFlat, m_adoptPosBuf, count * 3 * sizeof(float));
 
+            // First real speaker transform: snap instantly instead of ramping.
+            // See m_hasReceivedFirstSpeakerTransform declaration (header) for the
+            // full rationale — without this, the WFS gain/delay calculation reads
+            // positions still mid-ramp from the (0,0,0) setup-time seed for the
+            // first 50 ms, producing a near-field gain spike (output > 1.0,
+            // audible click/distortion) confirmed via diagnostic instrumentation.
+            const bool isFirstSpeakerTransform = !m_hasReceivedFirstSpeakerTransform;
+
             for (int i = 0; i < count; ++i)
             {
-                m_virtualSpeakerPosXSmoother[i].setTargetValue(m_adoptPosBuf[i * 3 + 0]);
-                m_virtualSpeakerPosYSmoother[i].setTargetValue(m_adoptPosBuf[i * 3 + 1]);
-                m_virtualSpeakerPosZSmoother[i].setTargetValue(m_adoptPosBuf[i * 3 + 2]);
+                if (isFirstSpeakerTransform)
+                {
+                    m_virtualSpeakerPosXSmoother[i].setCurrentAndTargetValue(m_adoptPosBuf[i * 3 + 0]);
+                    m_virtualSpeakerPosYSmoother[i].setCurrentAndTargetValue(m_adoptPosBuf[i * 3 + 1]);
+                    m_virtualSpeakerPosZSmoother[i].setCurrentAndTargetValue(m_adoptPosBuf[i * 3 + 2]);
+                    m_smoothedSpeakerPosX[i] = m_adoptPosBuf[i * 3 + 0];
+                    m_smoothedSpeakerPosY[i] = m_adoptPosBuf[i * 3 + 1];
+                    m_smoothedSpeakerPosZ[i] = m_adoptPosBuf[i * 3 + 2];
+                }
+                else
+                {
+                    m_virtualSpeakerPosXSmoother[i].setTargetValue(m_adoptPosBuf[i * 3 + 0]);
+                    m_virtualSpeakerPosYSmoother[i].setTargetValue(m_adoptPosBuf[i * 3 + 1]);
+                    m_virtualSpeakerPosZSmoother[i].setTargetValue(m_adoptPosBuf[i * 3 + 2]);
+                }
             }
+            if (isFirstSpeakerTransform)
+                m_hasReceivedFirstSpeakerTransform = true;
 
             // Update azimuth smoother targets from the NEW raw speaker positions.
             // Uses raw values (not smoothed arrays) because smoothers haven't advanced yet.
@@ -1159,17 +1261,57 @@ namespace AT
                     while (az >  180.f) az -= 360.f;
                     while (az < -180.f) az += 360.f;
 
-                    // Set sin/cos targets — no wraparound possible, no drift.
-                    const float azRad = az * juce::MathConstants<float>::pi / 180.f;
-                    m_virtualSpeakerAzimuthSinSmoother[i].setTargetValue(std::sin(azRad));
-                    m_virtualSpeakerAzimuthCosSmoother[i].setTargetValue(std::cos(azRad));
+                    if (isFirstSpeakerTransform)
+                    {
+                        m_virtualSpeakerAzimuthSmoother[i].setCurrentAndTargetValue(az);
+                        m_smoothedSpeakerAzimuth[i] = az;
+                    }
+                    else
+                    {
+                        m_virtualSpeakerAzimuthSmoother[i].setTargetValue(az);
+                    }
                 }
             }
 
             for (auto* p : m_playerSnapshot)
                 if (p && p->getSpatializer())
                     p->getSpatializer()->setVirtualSpeakerTransform(m_adoptPosBuf, m_adoptRotBuf, m_adoptFwdBuf, count);
-            } // if (adopted)
+        }
+
+        // ── Startup geometry gate ─────────────────────────────────────────
+        // See m_startupGateOpen declaration (header) for the full rationale.
+        // Placed AFTER all Step 0 adoption so staged transforms keep being
+        // consumed while the gate is closed, and BEFORE the mode-change /
+        // render pipeline so nothing is rendered on placeholder geometry.
+        if (!m_startupGateOpen)
+        {
+            const bool geometryReady = m_hasReceivedFirstListenerTransform
+                                    && m_hasReceivedFirstSpeakerTransform;
+
+            if (geometryReady || ++m_startupGateBlocksWaited >= STARTUP_GATE_TIMEOUT_BLOCKS)
+            {
+                m_startupGateOpen = true;
+
+                // Release through the existing warmup + fade-in machinery:
+                // output stays muted for WARMUP_BLOCKS (convolver stabilisation),
+                // then the warmup-countdown block below starts the fade-in to 1.
+                // First audible samples are thus computed on real geometry and
+                // enter with a fade — no snap discontinuity, no phantom render.
+                m_transitionGain.setCurrentAndTargetValue(0.0f);
+                m_warmupBlocksRemaining = WARMUP_BLOCKS;
+
+                LOG(geometryReady
+                    ? "Audio thread: startup gate released on real geometry — warmup + fade-in"
+                    : "Audio thread: startup gate TIMEOUT — proceeding with placeholder geometry (standalone use?)");
+            }
+            else
+            {
+                bufferToFill.clearActiveBufferRegion();
+                const int safeOutCh = std::min(m_numOutputChannels, MAX_VIRTUAL_SPEAKERS);
+                for (int i = 0; i < safeOutCh; i++)
+                    m_metersArray[i] = -90.0f;
+                return;
+            }
         }
 
         // Step 3: Detect mode change request and start the fade-out
@@ -1217,6 +1359,19 @@ namespace AT
         if (m_isSimpleBinauralSpat)
         {
             processSimpleBinaural(bufferToFill);
+
+            // Near-field ILD correction — same filter as WFS binaural, but applied
+            // here because Simple Binaural writes directly to bufferToFill (no
+            // m_binauralTemp intermediate), so processBinauralVirtualization()'s
+            // internal NFC call never runs in this code path.
+            if (m_isNearFieldCorrection.load(std::memory_order_relaxed)
+                && bufferToFill.buffer->getNumChannels() >= 2)
+            {
+                m_nearFieldCorrection.processStereo(
+                    bufferToFill.buffer->getWritePointer(0, bufferToFill.startSample),
+                    bufferToFill.buffer->getWritePointer(1, bufferToFill.startSample),
+                    bufferToFill.numSamples);
+            }
         }
         else
         {
@@ -1314,21 +1469,25 @@ namespace AT
         if (bufferToFill.buffer != nullptr)
         {
             const int safeOutCh = std::min(m_numOutputChannels, MAX_VIRTUAL_SPEAKERS);
+
             for (int channel = 0; channel < safeOutCh
                                   && channel < bufferToFill.buffer->getNumChannels(); channel++)
             {
                 float rmsSum = 0.0f;
                 float* channelData = bufferToFill.buffer->getWritePointer(channel, bufferToFill.startSample);
 
+                float prevSample = channelData[0];
                 for (int i = 0; i < bufferToFill.numSamples; i++)
                 {
                     channelData[i] *= powf(10.0f, (m_masterGain + m_makeupMasterGain) / 20.0f);
                     rmsSum += channelData[i] * channelData[i];
+
                 }
 
                 float rmsValue = sqrtf(rmsSum / bufferToFill.numSamples);
                 m_metersArray[channel] = (rmsValue > 0.0f) ? 20.0f * log10f(rmsValue) : -90.0f;
             }
+
         }
     }
 
@@ -1429,13 +1588,20 @@ namespace AT
                 if (spatPlayer->getSpatializer() != nullptr)
                     spatPlayer->getSpatializer()->setPlayerTransform(position, rotation, forward);
 
-                // Track source position for NFC geometry (last-updated-player heuristic).
-                // Correct for single-player corpus sessions; for multi-player, uses the
-                // most recently moved source.
-                m_nfcSourcePosX = position[0];
-                m_nfcSourcePosY = position[1];
-                m_nfcSourcePosZ = position[2];
-                updateNearFieldCorrectionGeometry();
+                // Stage source position for NFC geometry (last-updated-player heuristic;
+                // correct for single-player corpus sessions, tracks the most recently
+                // moved source for multi-player scenes). This runs on the main thread —
+                // write ONLY into the staging buffer under m_positionLock and let the
+                // audio thread adopt it once per block. Do NOT touch m_nfcSourcePosX/Y/Z
+                // or call updateNearFieldCorrectionGeometry() here: both read/write
+                // audio-thread-owned state (see FIX B in the header).
+                {
+                    const juce::SpinLock::ScopedLockType lock(m_positionLock);
+                    m_pendingNfcSourcePosition[0] = position[0];
+                    m_pendingNfcSourcePosition[1] = position[1];
+                    m_pendingNfcSourcePosition[2] = position[2];
+                }
+                m_nfcSourceDirty.store(true, std::memory_order_release);
                 break;
             }
         }
@@ -1597,6 +1763,29 @@ namespace AT
             LOG_ERROR("Cannot enable simple binaural mode: binaural virtualization is not enabled");
             LOG_ERROR("Simple binaural mode requires isBinauralVirtualization = true (set in setup)");
             return false;
+        }
+
+        // Guard against redundant requests for the mode that is already active
+        // (or already the target of an in-flight transition).
+        //
+        // Without this check, a Unity-side call made at startup to simply restore
+        // the saved/initial mode (even when it matches the engine's current
+        // default) unconditionally re-armed the full transition machinery:
+        // fade-out → resetDelayLine()/HRTFProcessor::reset()/preWarmBinaural()
+        // (abrupt mid-stream resets → audible clicks) → silence during
+        // WARMUP_BLOCKS → fade-in. This produced exactly that symptom: a few
+        // seconds of clicky audio at PlayMode start, then silence, even though
+        // no actual mode change was ever needed.
+        //
+        // m_targetSimpleBinauralMode reflects the last requested mode whether
+        // or not the transition to it has completed yet, so comparing against
+        // it (rather than the audio-thread-only m_isSimpleBinauralSpat) also
+        // correctly no-ops repeated requests made while a transition is still
+        // in flight.
+        if (isSimple == m_targetSimpleBinauralMode.load(std::memory_order_acquire))
+        {
+            LOG("setIsSimpleBinauralSpat: requested mode already active/targeted — ignoring (no-op)");
+            return true;
         }
 
         LOG("Requesting mode change to: " << (isSimple ? "Simple Binaural" : "WFS + Binaural"));
@@ -1794,9 +1983,15 @@ namespace AT
     {
         m_isNearFieldCorrection.store(enabled, std::memory_order_release);
         if (!enabled)
-            m_nearFieldCorrection.reset();
-        else
-            updateNearFieldCorrectionGeometry(); // sync filter to current geometry
+        {
+            // Defer to the audio thread (see getNextAudioBlock() Step 0): calling
+            // m_nearFieldCorrection.reset() directly from this (main) thread would
+            // race with processStereo() running concurrently on the audio thread.
+            m_nfcResetRequested.store(true, std::memory_order_release);
+        }
+        // No explicit resync needed when enabling: updateNearFieldCorrectionGeometry()
+        // now runs unconditionally once per block on the audio thread, so geometry
+        // catches up on the very next block for free.
         LOG("Near-field correction: " << (enabled ? "ON" : "OFF"));
     }
 
@@ -1830,10 +2025,35 @@ namespace AT
 
     void SpatializationEngine::setNearFieldCorrectionRRef(float rRef, float headRadius)
     {
-        m_nfcRRef       = rRef;
-        m_nfcHeadRadius = headRadius;
-        updateNearFieldCorrectionGeometry();
-        LOG("NF correction: r_ref=" << rRef << "m  head_radius=" << headRadius << "m");
+        // Defensive defaults — callers (historically the Unity C# side) have
+        // passed 0 for headRadius, which NearFieldCorrection::setParameters()
+        // silently clamps to 0.01 m: a 1 cm head, collapsing the inter-ear
+        // distance difference and neutralising the ILD correction. Treat
+        // non-positive values as "use default" and say so in the log.
+        if (headRadius <= 0.0f)
+        {
+            LOG_WARNING("setNearFieldCorrectionRRef: headRadius " << headRadius
+                        << " <= 0, using default " << AT::NearFieldCorrection::DEFAULT_HEAD_RADIUS << " m");
+            headRadius = AT::NearFieldCorrection::DEFAULT_HEAD_RADIUS;
+        }
+        if (rRef <= 0.0f)
+        {
+            LOG_WARNING("setNearFieldCorrectionRRef: rRef " << rRef
+                        << " <= 0, using default 1.0 m");
+            rRef = 1.0f;
+        }
+
+        // Main thread — stage under lock, audio thread adopts once per block
+        // (see getNextAudioBlock() Step 0). Documented as "call once at setup
+        // time", but staged regardless: costs nothing and removes any assumption
+        // about exactly when it's safe to call relative to audio thread start.
+        {
+            const juce::SpinLock::ScopedLockType lock(m_positionLock);
+            m_pendingNfcRRef       = rRef;
+            m_pendingNfcHeadRadius = headRadius;
+        }
+        m_nfcRefParamsDirty.store(true, std::memory_order_release);
+        LOG("NF correction: r_ref=" << rRef << "m  head_radius=" << headRadius << "m (staged)");
     }
 
     void SpatializationEngine::updateNearFieldCorrectionGeometry()

@@ -20,14 +20,35 @@
  * output based on the rigid sphere model (Duda & Martens 1998). For each ear,
  * the correction transfer function relative to the BRIR at r_ref is:
  *
- *   H_ear(s) = (r_ref / r_ear) × (s + c/r_ref) / (s + c/r_ear)
+ *   H_ear(s) = (s + c/r_ear) / (s + c/r_ref)
+ *
+ * (zero at c/r_ear, pole at c/r_ref — NOT the other way round, and with no
+ * separate r_ref/r_ear amplitude prefactor: that prefactor would exactly
+ * cancel the zero/pole ratio at DC and turn this into a high-frequency
+ * boost instead, which is physically backwards — see NOTE below).
  *
  * Properties:
- *   - Frequency-independent (unity) above ~c/r_ear  (~343 Hz for r=1m)
- *   - Low-frequency boost proportional to r_ref/r_ear when r_ear < r_ref
+ *   - Frequency-independent (unity) above ~c/r_ref  (the pole, shared by
+ *     both ears since it only depends on the fixed BRIR reference distance)
+ *   - Low-frequency boost equal to r_ref/r_ear when r_ear < r_ref — this is
+ *     where the inter-aural level difference (ILD) actually lives
+ *     (Brungart & Rabinowitz 1999 report the near-field ILD increase as a
+ *     low-frequency effect)
  *   - Phase: first-order all-pass character at mid/high frequencies
  *   - No effect when r_virtual == r_ref (filter is transparent)
  *   - No effect at θ=0° (frontal source, r_ipsi == r_contra)
+ *
+ * NOTE (fixed 2026): an earlier revision used H_ear(s) = (r_ref/r_ear) ×
+ * (s+c/r_ref)/(s+c/r_ear) — zero and pole swapped relative to the formula
+ * above, with an extra (r_ref/r_ear) prefactor. That construction is unity
+ * at DC and boosts by r_ref/r_ear at HF: a high-frequency shelf, which
+ * contradicts the documented intent (LF boost) and the cited literature.
+ * The amplitude prefactor was redundant by design — for any K = ωp/ωz the
+ * gain at s=0 is always 1, regardless of which radius is assigned to the
+ * zero and which to the pole, so multiplying by an extra r_ref/r_ear on
+ * top of the zero/pole structure just pushes the boost to the wrong end
+ * of the spectrum instead of removing it. The fix is to drop that
+ * prefactor and swap which radius defines the zero vs. the pole.
  *
  * Ear distances are derived from the simple geometric model for a sphere of
  * radius a (head radius), given source distance r and azimuth θ:
@@ -56,8 +77,28 @@
 
 #pragma once
 
+// ============================================================================
+// COMPILE-TIME CONFIGURATION
+// ============================================================================
+//
+// AT_NFC_DISABLE_GAIN_COMPENSATION
+//   By default, the per-ear gain is normalised (see computeCoefficients())
+//   so that the average level across both ears stays at 0 dB, at the cost
+//   of a small HF attenuation (normGain < 1, typically a few dB). Define
+//   this macro to skip that normalisation entirely: each ear then gets the
+//   raw H_ear(s) = (s + c/r_ear) / (s + c/r_ref) response — a low-frequency
+//   boost (up to r_ref/r_ear) with the HF sitting exactly at unity (0 dB)
+//   for both channels, but no broadband level control (the two ears' DC
+//   gains are no longer forced to average out to 0 dB).
+//
+// Defined by default (LF boost preferred over HF attenuation). Comment out
+// to re-enable the DC-level normalisation described above.
+#define AT_NFC_DISABLE_GAIN_COMPENSATION
+
 #include <cmath>
 #include <cassert>
+#include <algorithm>
+#include <atomic>
 
 #ifndef M_PI
     #define M_PI 3.14159265358979323846
@@ -189,9 +230,23 @@ namespace AT
                 m_pendingUpdate.store(false, std::memory_order_release);
             }
 
-            // Bypass check: filter is transparent if coefficients are at unity
-            if (m_bypass)
-                return;
+            // NOTE: no early-return on bypass here anymore (see history below).
+            // Bypass coefficients (b0=1, b1=0, a1=0) already reduce the loop
+            // below to y = x — mathematically a no-op — so we always run it.
+            //
+            // FIXED (2026): the previous version returned early here when
+            // m_bypass was true, WITHOUT running the per-sample loop at all.
+            // That meant m_state{L,R}_{x1,y1} stopped updating for as long as
+            // the source stayed in the bypass zone (near-frontal azimuth, or
+            // r_virtual >= r_ref) — sometimes hundreds of blocks. The moment
+            // the source left that zone and the filter reactivated, the very
+            // first sample was computed against that stale state, producing
+            // an audible discontinuity right at the bypass/active boundary —
+            // i.e. exactly around azimuth 0, which is what was being reported
+            // as intermittent "cuts". Always running the loop keeps the state
+            // continuously synced to the real signal (with y=x while
+            // bypassed), so reactivation is seamless. This also removes the
+            // only audio-thread read of the non-atomic m_bypass flag.
 
             // Process left channel  — Direct Form I, one pole / one zero
             for (int i = 0; i < numSamples; ++i)
@@ -227,7 +282,13 @@ namespace AT
          *
          * Transfer function per ear (analogue):
          *
-         *   H_ear(s) = (r_ref / r_ear) × (s + c/r_ref) / (s + c/r_ear)
+         *   H_ear(s) = (s + c/r_ear) / (s + c/r_ref)
+         *
+         * Zero at c/r_ear (varies per channel, since r_ipsi != r_contra),
+         * pole at c/r_ref (shared by both channels — the BRIR reference
+         * distance is the same for L and R). No separate amplitude
+         * prefactor: the LF boost (r_ref/r_ear) and HF unity gain both fall
+         * out of this zero/pole placement on their own.
          *
          * Bilinear transform s = 2·fs·(1 - z⁻¹)/(1 + z⁻¹)  yields:
          *
@@ -235,7 +296,10 @@ namespace AT
          *   b1 = gain × (-2fs + ωz) / (2fs + ωp)
          *   a1 = (-2fs + ωp) / (2fs + ωp)       (sign: y[n] = b0·x - b1·x[n-1] - a1·y[n-1])
          *
-         * where ωz = c/r_ref, ωp = c/r_ear, gain = r_ref/r_ear.
+         * where ωz = c/r_ear (per channel), ωp = c/r_ref (shared), and
+         * gain = normGain (the DC-level normaliser, see below — not a
+         * per-ear r_ref/r_ear factor, which would double up the zero/pole
+         * ratio and is already baked into ωz vs. ωp).
          *
          * Direct Form I:  y[n] = b0·x[n] + b1·x[n-1] - a1·y[n-1]
          *
@@ -294,29 +358,37 @@ namespace AT
                 return;
             }
 
-            // -- Analogue pole/zero frequencies ----------------------------
-            const float omegaZ = c / rRef;          // zero (same for both ears)
+            // -- Analogue pole frequency (shared, fixed reference) ----------
+            const float omegaP = c / rRef;          // pole (same for both ears)
 
-            // -- HF gain normalisation -------------------------------------
+            // -- DC-level normalisation --------------------------------------
             //
-            // Without normalisation the filter has HF gain = r_ref/r_ear, which
-            // produces a large broadband level boost relative to the bypass path
-            // (up to +7 dB per channel at 0.5 m, az=90°).
+            // Each per-ear filter H_ear(s) = (s + c/r_ear) / (s + c/r_ref) has:
+            //   DC gain  G_ear_DC = r_ref / r_ear   (the ILD-bearing term)
+            //   HF gain  G_ear_HF = 1                (unity, identical both ears)
             //
-            // We want to preserve only the *inter-aural* level difference (ILD),
-            // not the absolute level increase. Normalising by the geometric mean
-            // of the two HF gains keeps their ratio (= the ILD) intact while
-            // bringing the average HF gain back to 0 dB:
+            // Without normalisation the DC gain differs from 0 dB and produces
+            // a broadband level shift relative to the bypass path (e.g. close
+            // to +7 dB at 0.5 m, az=90°, same order as the old HF-side bug).
             //
-            //   K = sqrt(G_L_HF × G_R_HF) = r_ref / sqrt(r_L × r_R)
+            // Normalising by the geometric mean of the two DC gains keeps
+            // their ratio (= the ILD) intact while bringing the average DC
+            // gain back to 0 dB, at the cost of pulling the HF gain slightly
+            // below unity for both channels:
+            //
+            //   K = sqrt(G_L_DC × G_R_DC) = r_ref / sqrt(r_L × r_R)
             //   normGain = 1/K = sqrt(r_L × r_R) / r_ref
             //
-            // Effect on gains:
-            //   HF: G_L → G_L/K = sqrt(r_R/r_L)   (< 1 for contra, > 1 for ipsi)
-            //   HF: G_R → G_R/K = sqrt(r_L/r_R)   (symmetric)
-            //   DC: both channels get normGain (slight LF attenuation — acceptable
-            //       since the near-field ILD cue is primarily a HF/broadband effect)
-            //   ILD = G_R_HF/G_L_HF = r_L/r_R  →  unchanged after normalisation ✓
+            //   DC: G_L → G_L/K = sqrt(r_R/r_L)   (> 1 for ipsi, < 1 for contra)
+            //   DC: G_R → G_R/K = sqrt(r_L/r_R)   (symmetric)
+            //   HF: both channels get normGain (< 1, since r_L, r_R < r_ref)
+            //   ILD = G_L_DC/G_R_DC = r_R/r_L  →  unchanged after normalisation ✓
+            //
+            // AT_NFC_DISABLE_GAIN_COMPENSATION skips this: normGain = 1, so
+            // each ear keeps its raw DC boost (r_ref/r_ear) and both ears sit
+            // exactly at 0 dB in HF — no broadband level control, but no HF
+            // attenuation either. See the compile-time configuration block
+            // at the top of this file.
 
             // -- Determine which physical ear is ipsilateral ---------------
             // L channel correction: if az > 0 (right), L is contralateral
@@ -333,28 +405,28 @@ namespace AT
                 r_R = r_contra;   // right ear = contralateral
             }
 
+#ifdef AT_NFC_DISABLE_GAIN_COMPENSATION
+            const float normGain = 1.0f;
+#else
             // normGain = 1/K = sqrt(r_L * r_R) / r_ref
-            // Applied to b0 and b1 only (not a1): scales the numerator,
-            // leaves the pole unchanged. The ILD ratio is preserved exactly.
             const float normGain = std::sqrt(r_L * r_R) / rRef;
+#endif
 
             // -- Left channel coefficients ---------------------------------
             {
-                const float omegaP = c / r_L;
-                const float gain   = normGain * rRef / r_L;   // = normGain × G_L_HF
+                const float omegaZ = c / r_L;
                 const float denom  = twoFs + omegaP;
-                m_pendingB0_L = gain * (twoFs + omegaZ) / denom;
-                m_pendingB1_L = gain * (-twoFs + omegaZ) / denom;
+                m_pendingB0_L = normGain * (twoFs + omegaZ) / denom;
+                m_pendingB1_L = normGain * (-twoFs + omegaZ) / denom;
                 m_pendingA1_L = (-twoFs + omegaP) / denom;
             }
 
             // -- Right channel coefficients --------------------------------
             {
-                const float omegaP = c / r_R;
-                const float gain   = normGain * rRef / r_R;   // = normGain × G_R_HF
+                const float omegaZ = c / r_R;
                 const float denom  = twoFs + omegaP;
-                m_pendingB0_R = gain * (twoFs + omegaZ) / denom;
-                m_pendingB1_R = gain * (-twoFs + omegaZ) / denom;
+                m_pendingB0_R = normGain * (twoFs + omegaZ) / denom;
+                m_pendingB1_R = normGain * (-twoFs + omegaZ) / denom;
                 m_pendingA1_R = (-twoFs + omegaP) / denom;
             }
         }
@@ -387,6 +459,10 @@ namespace AT
         // ====================================================================
 
         std::atomic<bool> m_pendingUpdate{false};
+        // Main-thread-only bookkeeping (used by computeCoefficients()/setParameters()
+        // to decide what to write into m_pending*). No longer read by the audio
+        // thread — processStereo() always runs the DF-I loop now regardless of
+        // this flag, so it's not part of any cross-thread contract.
         bool              m_bypass = true;
 
         // Pending (main thread writes)

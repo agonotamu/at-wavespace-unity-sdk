@@ -63,7 +63,8 @@ bool HRTFTable::build(const SOFAReader& reader, double audioSampleRate, int maxI
     effectiveLen = std::min(effectiveLen, MAX_IR_LENGTH);
     if (effectiveLen <= 0) return false;
 
-    m_irLength = effectiveLen;
+    m_irLength     = effectiveLen;
+    m_usedIRLength = effectiveLen;   // initially same as stored length
 
     // Flat raw IR storage — ORIGINAL order (not reversed).
     // Layout: [meas_i_L[0..M-1] | meas_i_R[0..M-1]] for each i.
@@ -113,9 +114,10 @@ void HRTFTable::prepareFFT(int blockSize)
     // of this rebuild.  The lock is held until all writes to m_fftData finish.
     std::unique_lock<std::shared_mutex> lock(*m_fftDataMutex);
 
-    // FFT size = smallest power of 2 >= blockSize + irLength - 1
-    // This guarantees linear (non-circular) convolution.
-    const int minSize = blockSize + m_irLength - 1;
+    // FFT size = smallest power of 2 >= blockSize + usedIRLength - 1.
+    // m_usedIRLength (≤ m_irLength) drives the FFT size; m_irLength is the
+    // stride in m_data and is not changed by setRuntimeTruncation().
+    const int minSize = blockSize + m_usedIRLength - 1;
     int order = 0;
     while ((1 << order) < minSize) ++order;
 
@@ -143,17 +145,19 @@ void HRTFTable::prepareFFT(int blockSize)
         float* dstR = dstL + 2 * m_fftSize;
 
         // Left IR → FFT
-        // juce::dsp::FFT::performRealOnlyForwardTransform:
-        //   - input:  first fftSize floats = real signal, rest = 0 (scratch)
-        //   - output: 2*fftSize floats = complex spectrum [re0,im0, re1,im1, …]
+        // Copy only m_usedIRLength samples (truncation point); the rest of
+        // 'work' is already zeroed by the fill() above, providing the
+        // zero-padding required for linear convolution.
+        // Note: m_data stride is 2 * m_irLength (unchanged by setRuntimeTruncation),
+        // so srcL/srcR pointers are correct regardless of m_usedIRLength.
         std::fill(work.begin(), work.end(), 0.0f);
-        std::memcpy(work.data(), srcL, static_cast<size_t>(m_irLength) * sizeof(float));
+        std::memcpy(work.data(), srcL, static_cast<size_t>(m_usedIRLength) * sizeof(float));
         m_fft->performRealOnlyForwardTransform(work.data());
         std::memcpy(dstL, work.data(), static_cast<size_t>(2) * m_fftSize * sizeof(float));
 
         // Right IR → FFT
         std::fill(work.begin(), work.end(), 0.0f);
-        std::memcpy(work.data(), srcR, static_cast<size_t>(m_irLength) * sizeof(float));
+        std::memcpy(work.data(), srcR, static_cast<size_t>(m_usedIRLength) * sizeof(float));
         m_fft->performRealOnlyForwardTransform(work.data());
         std::memcpy(dstR, work.data(), static_cast<size_t>(2) * m_fftSize * sizeof(float));
     }
@@ -263,6 +267,23 @@ void HRTFTable::findBracketingIndices(float azimuthDeg, float elevationDeg,
 }
 
 
+
+// ── Runtime truncation ────────────────────────────────────────────────────────
+
+int HRTFTable::setRuntimeTruncation(int usedLen, int blockSize)
+{
+    if (!m_built) return 0;
+
+    usedLen = std::max(1, std::min(usedLen, m_irLength));
+    m_usedIRLength = usedLen;
+
+    // Force re-run of prepareFFT() even if blockSize hasn't changed.
+    // (The normal idempotency guard would skip it since blockSize is the same.)
+    m_fftPrepared = false;
+    prepareFFT(blockSize);
+
+    return m_fftSize;   // caller checks if fftSize changed → re-prepare processors
+}
 
 void HRTFTable::resampleIR(const std::vector<float>& in,
                              std::vector<float>& out,

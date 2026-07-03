@@ -26,6 +26,15 @@ public class At_MasterOutput : MonoBehaviour
     /// and At_Player.MAX_VIRTUAL_SPEAKERS.
     /// </summary>
     public const int MAX_VIRTUAL_SPEAKERS = 1024;
+
+    /// <summary>
+    /// KEMAR head radius (metres) passed to the native NFC filter.
+    /// Must match AT::NearFieldCorrection::DEFAULT_HEAD_RADIUS in the C++ library.
+    /// Passing 0 is NOT a "use default" convention on the native side: it gets
+    /// clamped to 0.01 m (a 1 cm head), which collapses the inter-ear distance
+    /// difference and silently neutralises the ILD correction.
+    /// </summary>
+    public const float KEMAR_HEAD_RADIUS = 0.0875f;
     #endregion
 
     #region Public Variables
@@ -46,9 +55,14 @@ public class At_MasterOutput : MonoBehaviour
     public bool   isSimpleBinauralSpat;
     [NonSerialized] public bool isPrevSimpleBinauralSpat;
     public bool   isNearFieldCorrection;
-    public bool   isPrevIsNearFieldCorrection;
+    // NonSerialized for the same reason as isPrevSimpleBinauralSpat: "prev"
+    // change-detection state must never be restored by Unity serialization,
+    // otherwise a restored prev == current means the value is never sent to a
+    // freshly created native engine (NFC silently off despite the checkbox,
+    // or rRef stuck at the native default of 1.0 m).
+    [NonSerialized] public bool  isPrevIsNearFieldCorrection;
     public float  hrtfDistance;
-    public float  prevHrtfDistance = -1f;  // -1 forces send on first Update
+    [NonSerialized] public float prevHrtfDistance = -1f;  // -1 forces send on first Update
     public string hrtfFilePath = "";
     public bool   isHrtfTruncated;
     public int    numVirtualSpeakers = 2;
@@ -140,7 +154,21 @@ public class At_MasterOutput : MonoBehaviour
         m_prevIsWfsGain             = !outputState.isWfsGain;
         m_prevIsActiveSpeakersMinMax = !outputState.isActiveSpeakersMinMax;
         m_prevIsHrtfTruncated       = !outputState.isHrtfTruncated;       // force send
-        isPrevSimpleBinauralSpat    = !isSimpleBinauralSpat;              // force send
+
+        // NOTE: isPrevSimpleBinauralSpat is intentionally NOT force-inverted here.
+        // InitSpatializerEngine() (called a few lines below) already sends the
+        // initial isSimpleBinauralSpat value to the native engine once. If we also
+        // forced a mismatch here, the first Update() would detect a "change" and
+        // call AT_WS_setIsSimpleBinauralSpat() a second time with the exact same
+        // value — a fully redundant call. On the native side this used to
+        // unconditionally re-arm the fade-out/reset/warmup/fade-in transition
+        // machinery for nothing (clicks + a few seconds of silence at PlayMode
+        // start, even with a perfectly static listener). The native engine now
+        // also guards against this (no-ops a request for the already-targeted
+        // mode), but there is no reason to make the redundant P/Invoke call at all.
+        // isPrevSimpleBinauralSpat is set to match isSimpleBinauralSpat right after
+        // InitSpatializerEngine() actually sends it (see below), so Update()'s
+        // change-detection starts in sync with the engine's real state.
 
         meters = new float[outputChannelCount];
 
@@ -226,7 +254,7 @@ public class At_MasterOutput : MonoBehaviour
 
         if (hrtfDistance != prevHrtfDistance)
         {
-            if (AT_WS_setNearFieldCorrectionRRef(hrtfDistance, 0f) == AUDIO_PLUGIN_ERROR)
+            if (AT_WS_setNearFieldCorrectionRRef(hrtfDistance, KEMAR_HEAD_RADIUS) == AUDIO_PLUGIN_ERROR)
                 Debug.LogError("[AudioPlugin] Failed to set NFC rRef to " + hrtfDistance);
             prevHrtfDistance = hrtfDistance;
         }
@@ -312,7 +340,32 @@ public class At_MasterOutput : MonoBehaviour
 
             if (AT_WS_setIsSimpleBinauralSpat(isSimpleBinauralSpat) == AUDIO_PLUGIN_ERROR)
                 Debug.LogError($"[AudioPlugin] Failed to set simple binaural mode to {isSimpleBinauralSpat}");
+
+            // ── Near-field correction: send initial state explicitly here, same
+            // pattern (and same rationale) as isSimpleBinauralSpat above — a
+            // freshly created native engine starts with NFC off and rRef=1.0,
+            // regardless of what the previous session sent. Update()'s
+            // change-detection then starts in sync via the prev-value syncs below.
+            if (hrtfDistance <= 0f)
+            {
+                Debug.LogWarning("[AudioPlugin] hrtfDistance <= 0 in saved output state — " +
+                                 "falling back to 1.0 m (BRIR reference distance)");
+                hrtfDistance = 1.0f;
+            }
+            if (AT_WS_setNearFieldCorrectionRRef(hrtfDistance, KEMAR_HEAD_RADIUS) == AUDIO_PLUGIN_ERROR)
+                Debug.LogError($"[AudioPlugin] Failed to set NFC rRef to {hrtfDistance}");
+            if (AT_WS_setIsNearFieldCorrection(isNearFieldCorrection) == AUDIO_PLUGIN_ERROR)
+                Debug.LogError($"[AudioPlugin] Failed to set near-field correction to {isNearFieldCorrection}");
+
+            prevHrtfDistance            = hrtfDistance;
+            isPrevIsNearFieldCorrection = isNearFieldCorrection;
         }
+
+        // Engine now reflects isSimpleBinauralSpat (sent above when binaural
+        // virtualization is on, or simply never required otherwise since WFS-only
+        // is already the engine's default). Sync the prev-value so Update()'s
+        // change-detection doesn't redundantly resend it on the first frame.
+        isPrevSimpleBinauralSpat = isSimpleBinauralSpat;
 
         isInitialized = true;
     }

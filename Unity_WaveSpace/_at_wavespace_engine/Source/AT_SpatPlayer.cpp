@@ -119,13 +119,34 @@ namespace AT
         if (m_upReaderSource != nullptr)
         {
             // Reset fade state before (re)starting — m_fadeGain may be 0 after stopWithFade().
-            m_fadeGain          = 1.0f;
+            // Start silent and request a fade-in on the next block (processAndAdd(),
+            // audio thread) rather than snapping straight to full gain: the previous
+            // instant m_fadeGain = 1.0f produced an audible level spike at the very
+            // first sample — sharper than steady-state playback because of the WFS
+            // sum across multiple virtual speakers all starting in phase, plus the
+            // HRTF convolver's onset transient with an empty OLA overlap tail.
+            m_fadeGain          = 0.0f;
             m_isFadingOut       = false;
+            m_isFadingIn        = false;   // armed below via the request flag, same
+                                            // cross-thread pattern as stopWithFade()
             m_startFadeRequest.store(false, std::memory_order_release);
+            m_startFadeInRequest.store(true, std::memory_order_release);
+
+
             m_transportSource.start();
         }
     }
     
+    void SpatPlayer::setFadeInDuration(float seconds)
+    {
+        m_fadeInDurationSeconds.store(std::max(0.0f, seconds), std::memory_order_relaxed);
+    }
+
+    float SpatPlayer::getFadeInDuration() const
+    {
+        return m_fadeInDurationSeconds.load(std::memory_order_relaxed);
+    }
+
     void SpatPlayer::stop()
     {
         m_transportSource.stop();
@@ -286,9 +307,77 @@ namespace AT
                             : 1.0f;
         }
 
+        // Output fade-in for click/spike-free start (triggered by start()).
+        // Same rationale as the fade-out above: ramping at the OUTPUT stage avoids
+        // an abrupt full-amplitude onset summed across WFS channels / through the
+        // HRTF convolver. Mutually exclusive with fade-out (a fresh start() always
+        // clears m_isFadingOut first).
+        //
+        // DEFERRED START: don't even consume the request until the engine
+        // confirms it has adopted a real listener transform from Unity. Without
+        // this, the fade-in (default 300 ms) can finish well before the engine's
+        // first real listener data arrives — confirmed via [CLICK-DEBUG] to take
+        // up to ~900 ms in some runs, a startup SEQUENCING gap unrelated to fade
+        // duration. When real geometry then arrives, up to ~64 WFS gain
+        // smoothers can shift target simultaneously (switching from the
+        // geometry-pending fallback classification to the real one); summed
+        // across channels, their individually-smooth 50 ms ramps can still
+        // transiently overshoot the steady-state level — and with fadeGain
+        // already at 1.0 by then, there's no attenuation left to mask it.
+        // Deferring the fade-in's start to AFTER real geometry is confirmed
+        // guarantees the full fade-in duration of headroom always covers this
+        // resettlement, regardless of how long Unity's first transform took.
+        // (m_fadeGain stays at the 0.0f set in start() the whole time this is
+        // deferred, so output remains silent — not a behaviour change, just a
+        // later start.)
+        bool readyToStartFadeIn = true;
+        if (m_puSpatializer != nullptr)
+        {
+            auto* engine = m_puSpatializer->getSpatializationEngine();
+            if (engine != nullptr && !engine->hasReceivedFirstListenerTransform())
+                readyToStartFadeIn = false;
+        }
+
+        if (readyToStartFadeIn && m_startFadeInRequest.exchange(false, std::memory_order_acq_rel))
+        {
+            m_isFadingIn = true;
+            m_fadeGain   = 0.0f;
+
+            const float  durationSeconds = m_fadeInDurationSeconds.load(std::memory_order_relaxed);
+            const double totalSamples    = durationSeconds * m_sampleRate;
+
+            // totalSamples can be fractional/very small (duration ~0, or sampleRate
+            // not yet set) — fall back to a single-block ramp in that case, same as
+            // before, rather than risk a step of 0 or division issues.
+            m_fadeStep = (totalSamples >= 1.0)
+                         ? static_cast<float>(1.0 / totalSamples)
+                         : ((bufferToFill.numSamples > 0)
+                            ? 1.0f / static_cast<float>(bufferToFill.numSamples)
+                            : 1.0f);
+        }
+
         // Update spatial parameters once per block.
         if (m_puSpatializer != nullptr) {
             m_puSpatializer->updateSourceParametersTarget();
+        }
+
+        // Distance attenuation: evaluated once per block (pow() is too expensive
+        // per sample), then smoothed per sample below. Without the smoothing, the
+        // block-constant gain steps at every block boundary during translation —
+        // audible as periodic clicks at the block rate. See m_distanceGainSmoother.
+        {
+            const float distanceGainTarget = (m_puSpatializer != nullptr)
+                                             ? m_puSpatializer->computeDistanceGain()
+                                             : 1.0f;
+            if (m_distanceGainSnapPending)
+            {
+                m_distanceGainSmoother.setCurrentAndTargetValue(distanceGainTarget);
+                m_distanceGainSnapPending = false;
+            }
+            else
+            {
+                m_distanceGainSmoother.setTargetValue(distanceGainTarget);
+            }
         }
 
         // Simple binaural mode: process the entire block at once.
@@ -339,29 +428,43 @@ namespace AT
                 forwardX, forwardY, forwardZ
             );
             
-            // Update speaker mask (ensures numActiveSpeakerInMask > 0 when starting in binaural mode).
+            // Update speaker mask (ensures the smoother's target is set even when
+            // starting fresh in binaural mode — see setIsInsideAndUpdateSpeakerMask()).
+            // Note: this only needs to run once per block (mask geometry doesn't
+            // change mid-block); the smoother itself is advanced once per SAMPLE
+            // below, inside the loop, via advanceAndGetSmoothedNumActiveSpeakerInMask().
             m_puSpatializer->setIsInsideAndUpdateSpeakerMask();
 
-            // In Simple Binaural mode the HRTF already produces a correctly normalised
-            // stereo output — dividing by sqrt(numActiveSpeakerInMask) is meaningless
-            // here and causes abrupt gain steps (audible clicks) whenever the speaker
-            // mask count changes during listener rotation.  Force the factor to 1.0.
-            const float normFactor = 1.0f;
+            // Distance attenuation: per-sample smoothed value (target set once per
+            // block above) — replaces the old block-constant gain whose per-block
+            // steps clicked during translation.
 
-            // Distance attenuation: 1 / max(d, minDist)^attenuation — computed once per block.
-            const float distanceGain = m_puSpatializer->computeDistanceGain();
-            
             // Add processed stereo output (channels 0 and 1) with fade gain.
             for (int sampleIndex = 0; sampleIndex < bufferToFill.numSamples; ++sampleIndex)
             {
                 float fadeGain = m_fadeGain;
                 if (m_isFadingOut)
                     m_fadeGain = std::max(0.0f, m_fadeGain - m_fadeStep);
+                else if (m_isFadingIn)
+                    m_fadeGain = std::min(1.0f, m_fadeGain + m_fadeStep);
+
+                // One advance per sample — shared by both L and R.
+                const float distanceGain = m_distanceGainSmoother.getNextValue();
+
+                // Smoothed (click-free) active-speaker-count normalization —
+                // replaces the old per-block raw count, which could step
+                // discontinuously (e.g. startup fallback -> real settled count),
+                // producing an audible gain jump/click on a continuous signal.
+                const float smoothedNumActiveSpeakerInMask =
+                    m_puSpatializer->advanceAndGetSmoothedNumActiveSpeakerInMask();
+                const float activeSpeakerNorm = (smoothedNumActiveSpeakerInMask > 0.0f)
+                    ? (1.0f / std::sqrt(smoothedNumActiveSpeakerInMask))
+                    : 0.0f;
 
                 float leftSample  = m_puBinauralSimpleSpatializer->getSample(0, sampleIndex)
-                                    / normFactor * fadeGain * distanceGain;
+                                    * activeSpeakerNorm * fadeGain * distanceGain;
                 float rightSample = m_puBinauralSimpleSpatializer->getSample(1, sampleIndex)
-                                    / normFactor * fadeGain * distanceGain;
+                                    * activeSpeakerNorm * fadeGain * distanceGain;
                 
                 if (bufferToFill.buffer->getNumChannels() > 0)
                     bufferToFill.buffer->addSample(0, bufferToFill.startSample + sampleIndex, leftSample);
@@ -375,15 +478,18 @@ namespace AT
                 m_isFadingOut = false;
                 m_fadeCompletedEvent.signal();
             }
+            if (m_isFadingIn && m_fadeGain >= 1.0f)
+            {
+                m_isFadingIn = false;
+            }
             
             return;
         }
         
         // WFS / 2D mode: sample-by-sample processing.
-        // Distance attenuation: computed once per block from smoothed positions.
-        const float distanceGain = (m_puSpatializer != nullptr)
-                                   ? m_puSpatializer->computeDistanceGain()
-                                   : 1.0f;
+        // Distance attenuation: per-sample smoothed (target set once per block
+        // above). Each sub-path below advances the smoother exactly numSamples
+        // times per block.
 
         // For 3D: address all virtual speaker slots (m_numOutputChannels = m_numVirtualSpeakers).
         // For 2D: the declared limit is m_numOutputChannels (= m_numVirtualSpeakers), NOT
@@ -414,10 +520,12 @@ namespace AT
         {
             const int N = bufferToFill.numSamples;
 
-            if (!m_isFadingOut)
+            if (!m_isFadingOut && !m_isFadingIn && !m_distanceGainSmoother.isSmoothing())
             {
-                // ── No fade : uniform scalar multiplier ──────────────────────
+                // ── No fade, distance gain settled : uniform scalar multiplier ──
                 // addWithMultiply(dst, src, scalar, N):  dst[i] += src[i] * scalar
+                const float distanceGain = m_distanceGainSmoother.getTargetValue();
+                m_distanceGainSmoother.skip(N);   // keep sample-accurate bookkeeping
                 for (int ch = 0; ch < numChannelsToProcess; ++ch)
                 {
                     const float* src = m_puAsci->buffer->getReadPointer(ch, m_puAsci->startSample);
@@ -427,18 +535,25 @@ namespace AT
             }
             else
             {
-                // ── Fade-out : pre-compute gain ramp once, then SIMD per channel
+                // ── Fade and/or distance-gain ramp : pre-compute gain ramp once,
+                //    then SIMD per channel.
                 //
-                // The ramp (m_fadeGain → 0) × distanceGain is identical for every
-                // channel, so we compute it once into m_puGainRamp.
+                // The ramp (m_fadeGain → 0 or → 1) × smoothed distanceGain is
+                // identical for every channel, so we compute it once into
+                // m_puGainRamp. This branch now also covers the no-fade case
+                // while the distance gain is still ramping (translation) — the
+                // per-sample ramp is what removes the per-block staircase clicks.
                 //
                 // addWithMultiply(dst, src1, src2, N):  dst[i] += src1[i] * src2[i]
                 // src2 is the gain ramp — element-wise envelope multiplication.
                 jassert(m_puGainRamp != nullptr);
                 for (int s = 0; s < N; ++s)
                 {
-                    m_puGainRamp[s] = m_fadeGain * distanceGain;
-                    m_fadeGain = std::max(0.0f, m_fadeGain - m_fadeStep);
+                    m_puGainRamp[s] = m_fadeGain * m_distanceGainSmoother.getNextValue();
+                    if (m_isFadingOut)
+                        m_fadeGain = std::max(0.0f, m_fadeGain - m_fadeStep);
+                    else if (m_isFadingIn)
+                        m_fadeGain = std::min(1.0f, m_fadeGain + m_fadeStep);
                 }
 
                 for (int ch = 0; ch < numChannelsToProcess; ++ch)
@@ -448,21 +563,25 @@ namespace AT
                     juce::FloatVectorOperations::addWithMultiply(dst, src, m_puGainRamp.get(), N);
                 }
 
-                if (m_fadeGain <= 0.0f)
+                if (m_isFadingOut && m_fadeGain <= 0.0f)
                 {
                     m_isFadingOut = false;
                     m_fadeCompletedEvent.signal();
+                }
+                if (m_isFadingIn && m_fadeGain >= 1.0f)
+                {
+                    m_isFadingIn = false;
                 }
             }
             return;  // bypass WFS/3D loop entirely
         }
 
-        // ── WFS / 3D mode : sample-by-sample loop (unchanged) ───────────────
+        // ── WFS / 3D mode : sample-by-sample loop ───────────────────────────
         for (auto sampleIndex = 0; sampleIndex < bufferToFill.numSamples; sampleIndex++)
         {
             if (m_puSpatializer != nullptr)
                 m_puSpatializer->advanceSourceSmoothers();
-            
+
             // 3D / WFS mode: push the mono source sample into the delay line.
             if (m_is3D && m_puSpatializer != nullptr &&
                 m_puAsci != nullptr && m_puAsci->buffer != nullptr &&
@@ -471,7 +590,10 @@ namespace AT
                 float inputSample = m_puAsci->buffer->getWritePointer(0, m_puAsci->startSample)[sampleIndex];
                 m_puSpatializer->m_wfsDelayLine.pushSample(0, inputSample);
             }
-            
+
+            // One advance per sample — shared by all output channels below.
+            const float distanceGain = m_distanceGainSmoother.getNextValue();
+
             for (auto outputChannel = 0; outputChannel < numChannelsToProcess; outputChannel++)
             {
                 auto* outputBuffer = bufferToFill.buffer->getWritePointer(outputChannel, bufferToFill.startSample);
@@ -481,6 +603,8 @@ namespace AT
             // Advance fade gain once per sample (after all channels).
             if (m_isFadingOut)
                 m_fadeGain = std::max(0.0f, m_fadeGain - m_fadeStep);
+            else if (m_isFadingIn)
+                m_fadeGain = std::min(1.0f, m_fadeGain + m_fadeStep);
         }
 
         if (m_isFadingOut && m_fadeGain <= 0.0f)
@@ -488,7 +612,11 @@ namespace AT
             m_isFadingOut = false;
             m_fadeCompletedEvent.signal();
         }
-        
+        if (m_isFadingIn && m_fadeGain >= 1.0f)
+        {
+            m_isFadingIn = false;
+        }
+
     }
 
     bool SpatPlayer::isPlaying() const
@@ -589,6 +717,12 @@ namespace AT
         m_samplesPerBlock = samplesPerBlock;
         m_sampleRate = sampleRate;
         m_isPrepared = true;
+
+        // Distance-gain smoother: 20 ms ramp — long enough to erase the per-block
+        // staircase (one block = 42.7 ms @ 2048/48k, so consecutive targets are
+        // close), short enough to track fast translations without audible lag.
+        m_distanceGainSmoother.reset(sampleRate, 0.02);
+        m_distanceGainSnapPending = true;
         
         // Only prepare sources if we have a file loaded
         if (m_upReaderSource != nullptr && m_puResampleSource != nullptr)

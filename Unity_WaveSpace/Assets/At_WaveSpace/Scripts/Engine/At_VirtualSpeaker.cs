@@ -33,7 +33,7 @@ public class At_VirtualSpeaker : MonoBehaviour
 
         // Speaker dot: white = active, red = inactive
         Gizmos.color = isActive ? new Color(1f, 1f, 1f, 0.5f) : new Color(1f, 0f, 0f, 0.5f);
-        Gizmos.DrawSphere(transform.position, 0.05f);
+        Gizmos.DrawSphere(transform.position, 0.3f);
 
         // Max-distance circle (WFS delay radius)
         const int CIRCLE_STEPS = 20;

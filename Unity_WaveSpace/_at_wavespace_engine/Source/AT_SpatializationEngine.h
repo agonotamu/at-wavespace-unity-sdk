@@ -279,6 +279,29 @@ namespace AT
         void getSmoothedVirtualSpeakerPosition(int speakerIndex, float& outX, float& outY, float& outZ) const;
         float getSmoothedAzimuthForSpeaker(int speakerIndex) const;
 
+        /**
+         * @brief True once the engine has adopted at least one real listener
+         * transform from Unity (see m_hasReceivedFirstListenerTransform).
+         *
+         * Before this, m_pListenerPosition/Forward (raw, per-Spatializer copies,
+         * set via Spatializer::setListenerTransform()) are still at their
+         * construction-time default — usually (0,0,0) — because no real
+         * transform has reached this player yet. This is a startup SEQUENCING
+         * gap (Unity's main thread can take a noticeable number of audio blocks
+         * to send its first transform after the engine starts processing — not
+         * a smoother/seeding bug), confirmed via [CLICK-DEBUG] instrumentation:
+         * Spatializer::setIsInsideAndUpdateSpeakerMask() was computing a
+         * geometrically WRONG (listener-at-origin) mask classification for
+         * ~21 blocks before being corrected once real data arrived — an
+         * audible, unavoidable correction regardless of how smoothly any
+         * individual smoother ramps or snaps, since the input itself was wrong.
+         *
+         * Spatializer uses this to skip mask classification entirely until
+         * real geometry is available, rather than computing (and briefly
+         * outputting) a result based on known-invalid data.
+         */
+        bool hasReceivedFirstListenerTransform() const { return m_hasReceivedFirstListenerTransform; }
+
         // ============================================================================
         // MULTITHREADING CONTROL
         // ============================================================================
@@ -405,17 +428,43 @@ namespace AT
         float m_nfcRRef       = 1.0f;
         float m_nfcHeadRadius = AT::NearFieldCorrection::DEFAULT_HEAD_RADIUS;
 
-        /// Position of the NFC virtual source — updated on every setPlayerTransform().
+        /// Position of the NFC virtual source (audio-thread-owned — written ONLY
+        /// by getNextAudioBlock() when adopting m_pendingNfcSourcePosition below).
         /// For the single-player corpus use case this is always correct.
         /// For multi-player scenes it tracks the most recently moved source.
         float m_nfcSourcePosX = 0.0f;
         float m_nfcSourcePosY = 0.0f;
         float m_nfcSourcePosZ = 1.0f;  ///< default: 1 m in front of listener
 
+        // -- FIX B applied to NFC geometry -------------------------------
+        // setPlayerTransform() and setNearFieldCorrectionRRef() run on the
+        // main thread and used to write m_nfcSourcePosX/Y/Z / m_nfcRRef /
+        // m_nfcHeadRadius directly, then call updateNearFieldCorrectionGeometry()
+        // — which also reads m_listenerPosX/Y/Z, itself audio-thread-owned.
+        // That's the same class of cross-thread float race that FIX B above
+        // was written to eliminate for the listener transform, just re-
+        // introduced for the NFC source. Fix: main thread writes only into
+        // staging buffers under m_positionLock; the audio thread adopts them
+        // once per block and recomputes the geometry itself (see Step 0 in
+        // getNextAudioBlock()).
+        std::atomic<bool> m_nfcSourceDirty{false};
+        float             m_pendingNfcSourcePosition[3] = {0.0f, 0.0f, 1.0f};
+
+        std::atomic<bool> m_nfcRefParamsDirty{false};
+        float             m_pendingNfcRRef       = 1.0f;
+        float             m_pendingNfcHeadRadius = AT::NearFieldCorrection::DEFAULT_HEAD_RADIUS;
+
+        /// Set by setIsNearFieldCorrection(false); consumed by the audio thread
+        /// at the start of the next block, which calls m_nearFieldCorrection.reset()
+        /// itself instead of the main thread doing it concurrently with processStereo().
+        std::atomic<bool> m_nfcResetRequested{false};
+
         /**
          * @brief Recomputes rVirtual and azimuthDeg from current listener/source
          *        positions and updates the NearFieldCorrection filter coefficients.
-         * Called automatically by setListenerTransform() and setPlayerTransform().
+         * Called once per block from the audio thread only (getNextAudioBlock(),
+         * Step 0), after adopting any pending listener/source/ref-param updates.
+         * No-op if near-field correction is disabled.
          */
         void updateNearFieldCorrectionGeometry();
         
@@ -446,6 +495,71 @@ namespace AT
         float             m_pendingListenerRotation[3] = {};
         float             m_pendingListenerForward[3]  = {};
         std::atomic<bool> m_listenerTransformDirty{false};
+
+        // True once the FIRST real listener transform from Unity has been adopted
+        // on the audio thread. Used to snap (rather than smoothly ramp) the listener
+        // and virtual-speaker-azimuth smoothers on that very first update only — see
+        // processBlock()/Step 0. Without this, the smoothers start from a value
+        // computed at setup() with default (pre-Unity) listener data, so the first
+        // real transform can imply an arbitrarily large azimuth jump that the 50 ms
+        // GLOBAL_SMOOTHING_TIME_SECONDS ramp then sweeps through far faster than any
+        // physical rotation — producing the same click signature as fast manual
+        // rotation, with the listener never having actually moved.
+        bool m_hasReceivedFirstListenerTransform = false;
+
+        // Same rationale as m_hasReceivedFirstListenerTransform, but for virtual
+        // speaker positions/azimuths. m_virtualSpeakerPosXSmoother[i] etc. are
+        // seeded at setup() from m_virtualSpeakerPositionsFlat, which is still at
+        // its default (0,0,0 for every speaker) at that point — real positions
+        // only arrive later via setVirtualSpeakerTransform(). Without this flag,
+        // the first real update only calls setTargetValue() (ramp), so for the
+        // first GLOBAL_SMOOTHING_TIME_SECONDS (50 ms) the WFS gain/delay
+        // calculation — which reads these smoothed, still-ramping-from-origin
+        // positions via getSmoothedVirtualSpeakerPosition() — can transiently see
+        // speakers much closer to the source than their real position, causing
+        // the near-field gain term (effectiveCos / sqrt(r_amp)) to spike well
+        // above 1.0 (audible click/distortion) before settling as the ramp
+        // completes. Confirmed via [CLICK-DEBUG] instrumentation: the output
+        // level spike consistently coincides with the active-speaker-mask count
+        // changing, which itself depends on this same still-ramping geometry.
+        bool m_hasReceivedFirstSpeakerTransform = false;
+
+        // ── Startup geometry gate ─────────────────────────────────────────
+        // setup() seeds m_virtualSpeakerPositionsFlat with a placeholder unit
+        // circle at the origin (see setup()). If a player starts before Unity's
+        // real transforms arrive, the engine renders — audibly AND in the Unity
+        // debug shader (which reads the same delays/gains) — a WFS wavefield
+        // computed on that fictitious 1 m ring: wrong wavefronts + massive
+        // aliasing. Then, when the first real speaker transform snaps in, every
+        // WFS delay jumps at once → audible discontinuity, because by then there
+        // IS audio continuity to protect (the "no continuity yet" assumption in
+        // the snap rationale only holds when nothing has played yet).
+        //
+        // The gate mutes rendering until BOTH first transforms (listener +
+        // speakers) have been adopted, then releases through the existing
+        // warmup + fade-in machinery, so the first audible samples are computed
+        // on real geometry and enter with a fade. A timeout preserves
+        // standalone/console use (EvaluationAppConsole etc.) where the default
+        // circle is legitimately used and no external transforms ever arrive.
+        //
+        // All three are audio-thread-owned. m_resetGeometryStateRequested is the
+        // only cross-thread part: setup() (main thread) sets it; the audio
+        // thread consumes it at the top of Step 0, clearing the two
+        // m_hasReceivedFirst* flags and re-arming the gate. This also fixes the
+        // stuck-after-second-setup() bug: those flags were previously never
+        // reset, so after a playmode restart without domain reload (or a device
+        // change) the re-seeded placeholder circle would RAMP (not snap) into
+        // the next real transform — the exact 50 ms near-field spike the snap
+        // was written to prevent — or, if Unity never resent the speaker
+        // transforms, the engine stayed stuck on the placeholder geometry
+        // (whose speaker mask can zero out the entire output → silence).
+        bool m_startupGateOpen        = false;
+        int  m_startupGateBlocksWaited = 0;
+        std::atomic<bool> m_resetGeometryStateRequested{false};
+
+        /// ~250 ms at 512 samples / 48 kHz before giving up on external
+        /// transforms and proceeding with the placeholder geometry.
+        static constexpr int STARTUP_GATE_TIMEOUT_BLOCKS = 24;
 
         float             m_pendingSpeakerPositions[MAX_VIRTUAL_SPEAKERS * 3] = {};
         float             m_pendingSpeakerRotations[MAX_VIRTUAL_SPEAKERS * 3] = {};
@@ -536,6 +650,7 @@ namespace AT
         static constexpr float BINAURALMODE_SMOOTHING_TIME_SECONDS = 0.05f;
         static constexpr int   HRTF_POSITION_UPDATE_CHUNK_SIZE = 64;
         int m_warmupBlocksRemaining = 0;
+
         static constexpr int WARMUP_BLOCKS = 8; ///< ~8 blocks @ 512 samples ≈ 85 ms at 48 kHz
 
         void updateGlobalParametersTarget();
@@ -553,17 +668,7 @@ namespace AT
         juce::LinearSmoothedValue<float> m_virtualSpeakerPosXSmoother[MAX_VIRTUAL_SPEAKERS];
         juce::LinearSmoothedValue<float> m_virtualSpeakerPosYSmoother[MAX_VIRTUAL_SPEAKERS];
         juce::LinearSmoothedValue<float> m_virtualSpeakerPosZSmoother[MAX_VIRTUAL_SPEAKERS];
-
-        /// Per-speaker azimuth smoothed via sin/cos components rather than
-        /// the angle itself, to avoid LinearSmoothedValue drift during continuous
-        /// rotation (a scalar angle smoother accumulates unboundedly when the
-        /// listener keeps rotating in the same direction, even with a shortest-path
-        /// delta fix — after one full rotation the internal value is already at
-        /// 360° and grows without bound). Sin and cos are bounded in [-1,1] and
-        /// interpolate correctly through any number of full rotations with no drift.
-        /// m_smoothedSpeakerAzimuth[i] is derived via atan2(sin,cos) in advanceGlobalSmoothers().
-        juce::LinearSmoothedValue<float> m_virtualSpeakerAzimuthSinSmoother[MAX_VIRTUAL_SPEAKERS];
-        juce::LinearSmoothedValue<float> m_virtualSpeakerAzimuthCosSmoother[MAX_VIRTUAL_SPEAKERS];
+        juce::LinearSmoothedValue<float> m_virtualSpeakerAzimuthSmoother[MAX_VIRTUAL_SPEAKERS];
 
         // Current smoothed listener values (scalars)
         float m_smoothedListenerPosX;

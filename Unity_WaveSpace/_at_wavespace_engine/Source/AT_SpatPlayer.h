@@ -97,6 +97,16 @@ namespace AT
          * Must NOT be called from the audio thread.
          */
         void stopWithFade();
+
+        /**
+         * @brief Sets the output fade-in duration used when start() is called.
+         * Thread-safe (atomic); picked up by the audio thread when the deferred
+         * fade-in actually begins. Values < 0 are clamped to 0.
+         */
+        void setFadeInDuration(float seconds);
+
+        /// Returns the current fade-in duration in seconds (thread-safe).
+        float getFadeInDuration() const;
         
         /**
          * @brief Sets the gain of the audiofile
@@ -450,11 +460,50 @@ namespace AT
         /// True while the fade ramp is in progress (audio thread only).
         bool m_isFadingOut = false;
 
+        /// True while the start fade-in ramp is in progress (audio thread only).
+        bool m_isFadingIn = false;
+
+        /// Set by main thread (start()) to trigger the fade-in on the next audio
+        /// block — same cross-thread pattern as m_startFadeRequest. The audio
+        /// thread defers consuming it until the engine has adopted a real
+        /// listener transform (see processAndAdd()).
+        std::atomic<bool> m_startFadeInRequest{false};
+
+        /// Fade-in duration in seconds (main thread writes via setFadeInDuration,
+        /// audio thread reads when the deferred fade-in actually starts).
+        std::atomic<float> m_fadeInDurationSeconds{0.3f};
+
         /// Current per-sample output multiplier during fade (audio thread only, 1→0).
         float m_fadeGain = 1.0f;
 
         /// Amount subtracted from m_fadeGain each sample (audio thread only).
         float m_fadeStep = 0.0f;
+
+        // ============================================================================
+        // DISTANCE ATTENUATION SMOOTHING
+        // ============================================================================
+
+        /**
+         * @brief Per-sample smoother for the distance-attenuation gain.
+         *
+         * computeDistanceGain() (1/d^attenuation, with a pow()) is too expensive
+         * to evaluate per sample, so it is evaluated once per block — but applying
+         * that value as a CONSTANT over the whole block makes the gain move in
+         * per-block STAIRCASE steps during listener/source translation. At 2048
+         * samples per block, those steps repeat at the block rate (~23 Hz @ 48 kHz)
+         * and are audible as periodic clicks — the strongest remaining click
+         * source in translation after all positions/masks/gains were smoothed.
+         *
+         * Fix: the block-rate evaluation becomes the smoother's TARGET, and the
+         * applied gain ramps toward it per sample (20 ms ramp). All three output
+         * paths (Simple Binaural, 2D, WFS/3D) consume this smoother.
+         * Audio thread only.
+         */
+        juce::LinearSmoothedValue<float> m_distanceGainSmoother { 1.0f };
+
+        /// One-shot: snap the smoother on the first block (same rationale as the
+        /// first-listener-transform snaps — no ramp from a meaningless default).
+        bool m_distanceGainSnapPending = true;
 
         // ============================================================================
         // IIR WFS PREFILTER  —  H(omega) = sqrt(j*omega)

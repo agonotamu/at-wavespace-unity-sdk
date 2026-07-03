@@ -69,6 +69,7 @@ public:
     bool isFFTPrepared()     const { return m_fftPrepared; }
     int  getNumMeasurements()const { return m_numMeasurements; }
     int  getIRLength()       const { return m_irLength; }
+    int  getUsedIRLength()   const { return m_usedIRLength; }
     int  getFFTSize()        const { return m_fftSize; }
     int  getFFTOrder()       const { return m_fftOrder; }
 
@@ -132,12 +133,40 @@ public:
 
     const SOFAReader& getSOFAReader() const { return *m_sofaReader; }
 
+    /**
+     * @brief Re-truncates the IRs used for FFT convolution to usedLen samples,
+     *        rebuilding m_fftData from the existing m_data WITHOUT re-reading
+     *        the SOFA file. Much cheaper than build() + prepareFFT().
+     *
+     * The raw IRs stored in m_data (up to m_irLength) are preserved, so this
+     * can be called repeatedly to try different truncation lengths at runtime.
+     *
+     * Purpose: with a 1°-resolution SOFA and a 2048-sample block, during fast
+     * rotation every active channel changes HRTF bracket pair every block.
+     * This causes the OLA overlap tail (computed with the OLD filter pair) to
+     * be added at full amplitude to the block computed with the NEW filter pair.
+     * Effective stale energy: the first (usedLen − 1) samples of the overlap.
+     * Shortening usedLen from 1024 to e.g. 512 halves this contamination zone,
+     * reducing the L−R interaural instability confirmed via [CLICK-DEBUG].
+     *
+     * Trade-off: shorter IR = lower frequency resolution in the HRTF (reduced
+     * low-frequency spatial accuracy). Typical useful values: 512, 256, 128.
+     *
+     * @param usedLen   Number of IR samples to use [1, m_irLength]. Clamped.
+     * @param blockSize Current audio block size (for FFT size calculation).
+     * @return          New FFT size. If different from the previous getFFTSize(),
+     *                  all HRTFProcessor instances must have prepare() called
+     *                  again before the next audio block.
+     */
+    int setRuntimeTruncation(int usedLen, int blockSize);
+
 private:
 
     // Stage-1 state
     bool   m_built           = false;
     int    m_numMeasurements = 0;
-    int    m_irLength        = 0;
+    int    m_irLength        = 0;   ///< samples stored in m_data (stride)
+    int    m_usedIRLength    = 0;   ///< samples used for FFT (≤ m_irLength)
 
     // Raw IRs (original order) — layout: [meas0_L[M] | meas0_R[M] | meas1_L | …]
     std::vector<float> m_data;

@@ -48,6 +48,30 @@ public:
     /** Zeros overlap buffers (call on transport stop/rewind). */
     void reset();
 
+    /**
+     * @brief Lightweight, non-blocking reset of the OLA overlap tail only
+     * (m_overlapL/R), leaving m_workBufIn/L/R untouched.
+     *
+     * Call this when a channel resumes HRTF processing after having been
+     * skipped for several blocks by an amplitude-based bypass (e.g.
+     * SpatializationEngine's HRTF_SKIP_THRESHOLD / HRTF_HOLD_BLOCKS logic).
+     * While skipped, olaBlock() never runs, so the overlap tail is left
+     * stale — it still holds the IR tail computed for whatever azimuth was
+     * current when the channel went silent. Re-adding that stale tail on
+     * resume mixes it with the new block computed for the current (possibly
+     * very different) azimuth, producing an audible click. This clears it.
+     *
+     * Safe to call from the audio thread: uses the same non-blocking
+     * try_lock pattern as olaBlock() on m_bufferMutex, and silently no-ops
+     * if prepare() currently holds the lock (in which case the overlap
+     * buffers are about to be reallocated anyway).
+     *
+     * Deliberately distinct from reset(): reset() also touches
+     * m_workBufIn/L/R, which prepare() may be concurrently resizing — not
+     * safe to call unconditionally from the audio thread.
+     */
+    void clearOverlapTail() noexcept;
+
     // ── HRTF table ────────────────────────────────────────────────────────────
 
     /**
@@ -117,22 +141,36 @@ private:
     std::vector<float> m_workBufIn;    ///< 2 * fftSize  — input FFT (shared L/R)
     std::vector<float> m_workBufL;     ///< 2 * fftSize  — convolution result, left
     std::vector<float> m_workBufR;     ///< 2 * fftSize  — convolution result, right
-    std::vector<float> m_workBufOldL;  ///< 2 * fftSize  — scratch for overlap recomputation
-    std::vector<float> m_workBufOldR;  ///< 2 * fftSize  — scratch for overlap recomputation
-    std::vector<float> m_overlapL;     ///< irLength-1    — OLA tail, left
-    std::vector<float> m_overlapR;     ///< irLength-1    — OLA tail, right
+    std::vector<float> m_workBufOldL;  ///< 2 * fftSize  — H_blend scratch, left
+    std::vector<float> m_workBufOldR;  ///< 2 * fftSize  — H_blend scratch, right
 
-    // ── Filter-change overlap correction ─────────────────────────────────────
-    // When azimuth changes between blocks, m_overlapL/R was computed with the
-    // old filter. We correct it by re-convolving the last overlapLen input
-    // samples (m_prevInput) with the new filter. Placement: prevInput goes at
-    // the START of the FFT buffer; correct tail is at Y[overlapLen..2*overlapLen-1].
-    std::vector<float> m_prevInput;    ///< last irLength-1 input samples (mono)
-    std::vector<float> m_prevHBlendL;  ///< H_blend spectrum from previous block (left)
-    std::vector<float> m_prevHBlendR;  ///< H_blend spectrum from previous block (right)
-    bool  m_hasPrevHBlend = false;
-    float m_prevAzimuth   = 0.0f;
-    float m_prevElevation = 0.0f;
+    // ── Dual-convolution crossfade (block-rate filter-step fix) ──────────────
+    //
+    // Every per-sample quantity in the engine is smoothed (positions, masks,
+    // WFS gains, azimuths, distance gain, fades) — but the HRTF filter itself
+    // is inherently BLOCK-rate: one H_blend per olaBlock() call, held constant
+    // for the whole block. During continuous listener motion this makes the
+    // filter advance in steps at the block rate (2048/48k ≈ 23.4 Hz), audible
+    // as periodic clicks/modulation in both rotation AND translation (both
+    // change the virtual-speaker azimuths). An EMA on H_blend (tried earlier)
+    // reduces the step size but keeps the step CADENCE — the modulation stays.
+    //
+    // Canonical fix: convolve the block with BOTH the previous block's filter
+    // and the new one, and crossfade linearly between the two outputs across
+    // the block. The effective filter trajectory becomes piecewise-linear in
+    // time — continuous at every sample, with no step at block boundaries.
+    // Cost: one extra pair of complex-multiply + IFFT per block per channel,
+    // only on blocks where the filter actually changed (skipped when static).
+    std::vector<float> m_prevHBlendL;   ///< 2 * fftSize — previous block's filter, L
+    std::vector<float> m_prevHBlendR;   ///< 2 * fftSize — previous block's filter, R
+    std::vector<float> m_workBufPrevL;  ///< 2 * fftSize — old-filter convolution scratch, L
+    std::vector<float> m_workBufPrevR;  ///< 2 * fftSize — old-filter convolution scratch, R
+    bool  m_prevHBlendValid = false;    ///< false → first block: single convolution, no fade
+    int   m_prevIdxLower = -1;          ///< bracket/alpha of the stored previous filter —
+    int   m_prevIdxUpper = -1;          ///<   compared against the current ones to skip
+    float m_prevAlpha    = -1.0f;       ///<   the dual path when the filter is unchanged
+    std::vector<float> m_overlapL;     ///< fftSize       — OLA tail, left
+    std::vector<float> m_overlapR;     ///< fftSize       — OLA tail, right
 
     // Private FFT instance — owns its own twiddle factors so that a concurrent
     // HRTFTable::prepareFFT() call (which destroys and recreates m_table's FFT)
