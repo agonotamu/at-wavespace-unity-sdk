@@ -61,4 +61,31 @@ public class At_PlayerState
 
     /// <summary>If true, the high-pass filter is bypassed.</summary>
     public bool highPassBypass = true;
+
+    /// <summary>
+    /// If true, applies listener-position-dependent 6DOF source masking to
+    /// this player's output (2D mode only — has no effect in 3D/WFS mode).
+    /// See AT_SixDofMaskProcessor (native) for the algorithm.
+    /// </summary>
+    public bool is6dofMaskEnabled = false;
+
+    /// <summary>
+    /// Grid resolution (metres) for 6DOF source mode-detection. Default 0.02,
+    /// validated on the clean synthetic FocalSources corpus — real/reverberant
+    /// recordings typically need a coarser value (0.1-0.3).
+    /// </summary>
+    public float sixDofGridRes = 0.02f;
+
+    /// <summary>
+    /// Minimum number of matching position estimates (within the rolling
+    /// localization history) for a 6DOF source to be accepted. Default 4
+    /// (synthetic corpus).
+    /// </summary>
+    public int sixDofMinBlockCount = 4;
+
+    /// <summary>
+    /// Number of audio callback blocks accumulated into one 6DOF localization
+    /// analysis window. 1 = lowest latency (default, try first).
+    /// </summary>
+    public int sixDofNumBufferedBlocks = 1;
 }

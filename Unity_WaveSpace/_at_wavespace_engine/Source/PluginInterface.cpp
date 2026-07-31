@@ -610,6 +610,111 @@ EXPORT_API int CALL_CONV AT_WS_getPlayerSpeakerMask(int uid, float* speakerMask,
     }
 }
 
+EXPORT_API int CALL_CONV AT_WS_setPlayer6dofMaskEnabled(int uid, bool isEnabled)
+{
+    std::lock_guard<std::mutex> lock(g_mutex);
+    try
+    {
+        if (!g_audioManager)
+            return AUDIO_PLUGIN_OK; // not an error — might be called after shutdown
+
+        g_audioManager->setPlayer6dofMaskEnabled(uid, isEnabled);
+        return AUDIO_PLUGIN_OK;
+    }
+    catch (...)
+    {
+        return AUDIO_PLUGIN_ERROR;
+    }
+}
+
+EXPORT_API int CALL_CONV AT_WS_setPlayer6dofGridRes(int uid, float gridRes)
+{
+    std::lock_guard<std::mutex> lock(g_mutex);
+    try
+    {
+        if (!g_audioManager)
+            return AUDIO_PLUGIN_OK;
+
+        g_audioManager->setPlayer6dofGridRes(uid, gridRes);
+        return AUDIO_PLUGIN_OK;
+    }
+    catch (...)
+    {
+        return AUDIO_PLUGIN_ERROR;
+    }
+}
+
+EXPORT_API int CALL_CONV AT_WS_setPlayer6dofMinBlockCount(int uid, int minBlockCount)
+{
+    std::lock_guard<std::mutex> lock(g_mutex);
+    try
+    {
+        if (!g_audioManager)
+            return AUDIO_PLUGIN_OK;
+
+        g_audioManager->setPlayer6dofMinBlockCount(uid, minBlockCount);
+        return AUDIO_PLUGIN_OK;
+    }
+    catch (...)
+    {
+        return AUDIO_PLUGIN_ERROR;
+    }
+}
+
+EXPORT_API int CALL_CONV AT_WS_setPlayer6dofNumBufferedBlocks(int uid, int numBufferedBlocks)
+{
+    std::lock_guard<std::mutex> lock(g_mutex);
+    try
+    {
+        if (!g_audioManager)
+            return AUDIO_PLUGIN_OK;
+
+        g_audioManager->setPlayer6dofNumBufferedBlocks(uid, numBufferedBlocks);
+        return AUDIO_PLUGIN_OK;
+    }
+    catch (...)
+    {
+        return AUDIO_PLUGIN_ERROR;
+    }
+}
+
+EXPORT_API int CALL_CONV AT_WS_getPlayer6dofSourceCount(int uid, int* outCount)
+{
+    std::lock_guard<std::mutex> lock(g_mutex);
+
+    if (!IsManagerValid() || outCount == nullptr)
+        return AUDIO_PLUGIN_ERROR;
+
+    try
+    {
+        *outCount = g_audioManager->getPlayer6dofNumDetectedSources(uid);
+        return AUDIO_PLUGIN_OK;
+    }
+    catch (...)
+    {
+        return AUDIO_PLUGIN_ERROR;
+    }
+}
+
+EXPORT_API int CALL_CONV AT_WS_getPlayer6dofSourcePositions(int uid, float* positions, int arraySize)
+{
+    std::lock_guard<std::mutex> lock(g_mutex);
+
+    if (!IsManagerValid() || positions == nullptr || arraySize <= 0)
+        return AUDIO_PLUGIN_ERROR;
+
+    try
+    {
+        const int maxSources = arraySize / 3;
+        g_audioManager->getPlayer6dofSourcePositions(uid, positions, maxSources);
+        return AUDIO_PLUGIN_OK;
+    }
+    catch (...)
+    {
+        return AUDIO_PLUGIN_ERROR;
+    }
+}
+
 EXPORT_API int CALL_CONV AT_WS_getMixerOutputMeters(float* meters, int arraySize)
 {
     std::lock_guard<std::mutex> lock(g_mutex);
@@ -965,6 +1070,23 @@ EXPORT_API int CALL_CONV AT_WS_loadDefaultHRTF()
     catch (...)
     {
         LOG_ERROR("[PluginInterface] Unknown exception while loading default HRTF");
+        return AUDIO_PLUGIN_ERROR;
+    }
+}
+
+EXPORT_API int CALL_CONV AT_WS_setBinauralRenderMode(int mode)
+{
+    std::lock_guard<std::mutex> lock(g_mutex);
+    try
+    {
+        if (!g_audioManager)
+            return AUDIO_PLUGIN_OK; // not an error — might be called after shutdown
+
+        g_audioManager->setBinauralRenderMode(mode);
+        return AUDIO_PLUGIN_OK;
+    }
+    catch (...)
+    {
         return AUDIO_PLUGIN_ERROR;
     }
 }

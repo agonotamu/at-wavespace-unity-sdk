@@ -11,6 +11,7 @@
 #include "AT_Spatializer.h"
 #include "AT_BinauralSimpleSpatializer.h"
 #include "AT_WfsPrefilter.h"
+#include "AT_SixDofMaskProcessor.h"
 
 namespace AT
 {
@@ -168,8 +169,14 @@ namespace AT
         /**
          * @brief process the first channel of audio fil with delay (and eventually gain)  of the driving function, and add the samples to the samples for each channel of the output buffer to fill
          * @param bufferToFill the output buffer to fill
+         * @param listenerX/Y/Z Current (smoothed) listener position, engine/world frame.
+         *        Only consumed by the 2D fast path when 6DOF source masking is enabled
+         *        (see AT_SixDofMaskProcessor) — ignored otherwise. Passed in rather than
+         *        queried via an engine back-pointer because 2D players hold no such
+         *        pointer (only m_puSpatializer, 3D-only, exposes one).
          */
-        void processAndAdd(const juce::AudioSourceChannelInfo& bufferToFill);
+        void processAndAdd(const juce::AudioSourceChannelInfo& bufferToFill,
+                            float listenerX = 0.0f, float listenerY = 0.0f, float listenerZ = 0.0f);
                 
         /**
          * @brief Gets the unique identifier for this player
@@ -225,6 +232,66 @@ namespace AT
          * @return pointer to the Spatializer instance
          */
         AT::Spatializer*  getSpatializer();
+
+        // ====================================================================
+        // 6DOF SOURCE MASKING (2D players only)
+        //
+        // Listener-position-dependent per-channel gain, applied to the raw
+        // captured signal already in the 2D player's buffer — no separate
+        // geometry needed, the player's N channels are assumed to match the
+        // engine's virtual speaker positions 1:1 (same convention as WFS).
+        // See AT_SixDofMaskProcessor.h for the algorithm.
+        // ====================================================================
+
+        /**
+         * @brief Enables or disables 6DOF source masking for this player.
+         *
+         * Lazily constructs the SixDofMaskProcessor on first enable (mirrors
+         * the m_puSpatializer lazy-construction pattern in setIs3D()) — NOT
+         * real-time safe, must not be called from the audio thread. Has no
+         * audible effect while m_is3D is true (masking only applies to the
+         * 2D fast path in processAndAdd()).
+         */
+        void setIs6dofMaskEnabled(bool isEnabled);
+        bool getIs6dofMaskEnabled() const;
+
+        /// Grid resolution (metres) for the 6DOF mode-detection histogram. Thread-safe.
+        void set6dofGridRes(float gridRes);
+        float get6dofGridRes() const;
+
+        /// Minimum matching-estimate count for a 6DOF source to be accepted. Thread-safe.
+        void set6dofMinBlockCount(int minBlockCount);
+        int get6dofMinBlockCount() const;
+
+        /// Number of audio blocks buffered into one 6DOF localization analysis window. Thread-safe.
+        void set6dofNumBufferedBlocks(int numBufferedBlocks);
+        int get6dofNumBufferedBlocks() const;
+
+        /**
+         * @brief Feeds the 6DOF mask processor with the array geometry it needs
+         *        (mic positions = virtual speaker positions, same convention
+         *        as WFS) and finalizes its allocation.
+         *
+         * Called by SpatializationEngine right after setIs6dofMaskEnabled(true)
+         * — SpatPlayer holds no back-pointer to the engine (2D players never
+         * needed one before), so the engine pushes its own
+         * m_virtualSpeakerPositionsFlat down explicitly instead. NOT
+         * real-time safe (allocates) — same contract as setIs6dofMaskEnabled().
+         *
+         * @param speakerPositionsFlat  Engine's [x0,y0,z0,x1,y1,z1,...] array.
+         * @param numSpeakerPositions   Length of that array / 3.
+         */
+        void prepare6dofMask(double sampleRate, int maxBlockSize,
+                              const float* speakerPositionsFlat, int numSpeakerPositions);
+
+        /// Number of currently detected 6DOF sources (0 if disabled/not yet detected).
+        int get6dofNumDetectedSources() const;
+
+        /**
+         * @brief Copies detected 6DOF source positions into a flat [x,y,z,...] array.
+         * @return Number of sources actually copied.
+         */
+        int get6dofSourcePositions(float* outPositions, int maxSources) const;
         
         /**
          * @brief get the RMS level of the played audio file in the player
@@ -329,6 +396,26 @@ namespace AT
          * @brief Spatializer object used to spatialize SpatPlayer audio if needed
          */
         std::unique_ptr<AT::Spatializer> m_puSpatializer;
+
+        /**
+         * @brief 6DOF source-masking processor (2D players only). Null until
+         * setIs6dofMaskEnabled(true) is called at least once — same lazy
+         * lifecycle contract as m_puSpatializer for 3D mode.
+         */
+        std::unique_ptr<AT::SixDofMaskProcessor> m_puSixDofMask;
+        bool m_is6dofMaskEnabled = false;
+
+        /**
+         * @brief True once prepare6dofMask() has successfully allocated the
+         * processor for the CURRENT enable cycle. Guards against re-running
+         * SixDofMaskProcessor::prepare() (full realloc + background-thread
+         * restart, unsynchronized with the audio thread mid-flight) on every
+         * redundant call — e.g. a caller pushing "isEnabled=true" every audio
+         * callback instead of only on the actual OFF->ON transition. Reset to
+         * false in setIs6dofMaskEnabled(false), so a genuine re-enable (or a
+         * new file with a different channel count) still re-prepares.
+         */
+        bool m_is6dofMaskPrepared = false;
         
         /**
         * @brief Simple binaural spatializer (used when m_isSimpleBinauralSpat = true)

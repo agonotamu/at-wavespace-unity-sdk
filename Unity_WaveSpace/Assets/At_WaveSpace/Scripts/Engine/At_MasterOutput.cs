@@ -65,6 +65,14 @@ public class At_MasterOutput : MonoBehaviour
     [NonSerialized] public float prevHrtfDistance = -1f;  // -1 forces send on first Update
     public string hrtfFilePath = "";
     public bool   isHrtfTruncated;
+
+    /// <summary>
+    /// Stereo-downmix rendering algorithm: 0 = amplitude panning (default,
+    /// no HRTF/convolution/delay lines), 1 = HRTF convolution. Falls back to
+    /// amplitude panning automatically (native side) if 1 is selected but no
+    /// HRTF file has been loaded yet.
+    /// </summary>
+    public int binauralRenderMode = 0;
     public int    numVirtualSpeakers = 2;
 
     public bool    isPlaying     = false;
@@ -185,6 +193,18 @@ public class At_MasterOutput : MonoBehaviour
         // NullReferenceException on masterOutput.numVirtualSpeakers.
         if (!isInitialized) return;
 
+        // Push virtual speaker positions to the native engine BEFORE any
+        // player initializes — critical for 6DOF source masking: initPlayer()
+        // (below) can enable masking and trigger a ONE-TIME snapshot of
+        // m_virtualSpeakerPositionsFlat (see AT_SpatPlayer::prepare6dofMask).
+        // If that snapshot happens before real positions are ever pushed,
+        // every mic is captured at (0,0,0) — a permanently degenerate
+        // geometry that never self-corrects (guarded by
+        // m_is6dofMaskPrepared). WFS/binaural rendering was unaffected by
+        // the old ordering because it re-reads speaker positions live every
+        // frame elsewhere in the engine; 6DOF masking does not.
+        UpdateVirtualSpeakerPosition();
+
         // Query scene players AFTER the engine has started successfully.
         // Placing this call here rather than at the top of Awake() has two benefits:
         //   1. Players whose own Awake() has not yet run still have their masterOutput
@@ -205,7 +225,6 @@ public class At_MasterOutput : MonoBehaviour
             }
         }
 
-        UpdateVirtualSpeakerPosition();
         isPlaying = true;
 
         foreach (SoundWaveShaderManager swsm in FindObjectsOfType<SoundWaveShaderManager>())
@@ -333,10 +352,17 @@ public class At_MasterOutput : MonoBehaviour
 
         if (isBinauralVirtualization)
         {
-            if (!string.IsNullOrEmpty(hrtfFilePath) && System.IO.File.Exists(hrtfFilePath))
+            SetBinauralRenderMode(binauralRenderMode);
+
+            // Only load a file if HRTF mode is actually selected AND a
+            // previously-chosen file is known. Otherwise: amplitude panning
+            // (mode 0), or HRTF mode with no file loaded yet — the native
+            // side already falls back to amplitude panning automatically in
+            // that case (see SpatializationEngine::processBinauralVirtualization),
+            // so there is nothing to load here. "Use Default HRTF" no longer
+            // exists as a concept — see the render-mode dropdown instead.
+            if (binauralRenderMode == 1 && !string.IsNullOrEmpty(hrtfFilePath) && System.IO.File.Exists(hrtfFilePath))
                 LoadHRTFFile(hrtfFilePath);
-            else
-                LoadDefaultHRTF();
 
             if (AT_WS_setIsSimpleBinauralSpat(isSimpleBinauralSpat) == AUDIO_PLUGIN_ERROR)
                 Debug.LogError($"[AudioPlugin] Failed to set simple binaural mode to {isSimpleBinauralSpat}");
@@ -503,6 +529,17 @@ public class At_MasterOutput : MonoBehaviour
             Debug.LogError("[AT_WS] Failed to load default HRTF");
         }
     }
+
+    /// <summary>
+    /// Selects the stereo-downmix rendering algorithm: 0 = amplitude panning
+    /// (default), 1 = HRTF. Falls back to amplitude panning automatically
+    /// (native side) if 1 is selected but no HRTF file has been loaded yet.
+    /// </summary>
+    public void SetBinauralRenderMode(int mode)
+    {
+        if (AT_WS_setBinauralRenderMode(mode) != AUDIO_PLUGIN_OK)
+            Debug.LogError($"[AT_WS] Failed to set binaural render mode to {mode}");
+    }
     #endregion
 
     #region Metering
@@ -565,6 +602,7 @@ public class At_MasterOutput : MonoBehaviour
     [DllImport("at_wavespace_engine", CallingConvention = CallingConvention.StdCall)] private static extern int AT_WS_setIsBinauralVirtualization(bool isBinauralVirtualization);
     [DllImport("at_wavespace_engine", CallingConvention = CallingConvention.StdCall, CharSet = CharSet.Ansi)] private static extern int AT_WS_loadHRTF(string filePath);
     [DllImport("at_wavespace_engine", CallingConvention = CallingConvention.StdCall)] private static extern int AT_WS_loadDefaultHRTF();
+    [DllImport("at_wavespace_engine", CallingConvention = CallingConvention.StdCall)] private static extern int AT_WS_setBinauralRenderMode(int mode);
     [DllImport("at_wavespace_engine", CallingConvention = CallingConvention.StdCall)] private static extern int AT_WS_setIsSimpleBinauralSpat(bool isSimpleBinauralSpat);
     [DllImport("at_wavespace_engine", CallingConvention = CallingConvention.StdCall)] private static extern int AT_WS_setIsNearFieldCorrection(bool isNearFieldCorrection);
     [DllImport("at_wavespace_engine", CallingConvention = CallingConvention.StdCall)] private static extern int AT_WS_setNearFieldCorrectionRRef(float rRef, float headRadius);

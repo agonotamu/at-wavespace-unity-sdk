@@ -315,6 +315,34 @@ namespace AT
          *                             Default: 0.3 m.
          */
         void setSecondarySourceSize(float secondarySourceSize);
+
+        // ====================================================================
+        // 6DOF SOURCE MASKING (2D players only)
+        // ====================================================================
+        void setPlayer6dofMaskEnabled(int uid, bool isEnabled)
+        {
+            m_spatializationEngine.setPlayer6dofMaskEnabled(uid, isEnabled);
+        }
+        void setPlayer6dofGridRes(int uid, float gridRes)
+        {
+            m_spatializationEngine.setPlayer6dofGridRes(uid, gridRes);
+        }
+        void setPlayer6dofMinBlockCount(int uid, int minBlockCount)
+        {
+            m_spatializationEngine.setPlayer6dofMinBlockCount(uid, minBlockCount);
+        }
+        void setPlayer6dofNumBufferedBlocks(int uid, int numBufferedBlocks)
+        {
+            m_spatializationEngine.setPlayer6dofNumBufferedBlocks(uid, numBufferedBlocks);
+        }
+        int getPlayer6dofNumDetectedSources(int uid)
+        {
+            return m_spatializationEngine.getPlayer6dofNumDetectedSources(uid);
+        }
+        int getPlayer6dofSourcePositions(int uid, float* outPositions, int maxSources)
+        {
+            return m_spatializationEngine.getPlayer6dofSourcePositions(uid, outPositions, maxSources);
+        }
         
         // ====================================================================
         // SPATIALIZATION ENGINE GETTERS FOR PLAYERS
@@ -334,6 +362,16 @@ namespace AT
         void setIsNearFieldCorrection(bool enabled)
         {
             m_spatializationEngine.setIsNearFieldCorrection(enabled);
+        }
+
+        /**
+         * @brief Selects the stereo-downmix rendering algorithm: 0 = amplitude
+         * panning (default), 1 = HRTF. Silently falls back to amplitude
+         * panning if mode 1 is requested but no HRTF table is loaded.
+         */
+        void setBinauralRenderMode(int mode)
+        {
+            m_spatializationEngine.setBinauralRenderMode(mode);
         }
 
         /**

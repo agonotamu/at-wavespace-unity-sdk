@@ -22,6 +22,10 @@
       <FILE id="r4z6AM" name="AT_SpatPlayer.h" compile="0" resource="0" file="Source/AT_SpatPlayer.h"/>
       <FILE id="GHcyju" name="AT_SpatPlayer.cpp" compile="1" resource="0"
             file="Source/AT_SpatPlayer.cpp"/>
+      <FILE id="xb0jyp" name="AT_SixDofMaskProcessor.h" compile="0" resource="0"
+            file="Source/AT_SixDofMaskProcessor.h"/>
+      <FILE id="McWYcN" name="AT_SixDofMaskProcessor.cpp" compile="1" resource="0"
+            file="Source/AT_SixDofMaskProcessor.cpp"/>
       <FILE id="QuQH0c" name="AT_Spatializer.h" compile="0" resource="0"
             file="Source/AT_Spatializer.h"/>
       <FILE id="jfSuO2" name="AT_Spatializer.cpp" compile="1" resource="0"

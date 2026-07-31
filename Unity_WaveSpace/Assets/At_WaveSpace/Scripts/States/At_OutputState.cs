@@ -32,6 +32,16 @@ public class At_OutputState
     /// <summary>If true, WFS output channels are virtualized to stereo via HRTF.</summary>
     public bool isBinauralVirtualization = false;
 
+    /// <summary>
+    /// Stereo-downmix rendering algorithm, active only while
+    /// isBinauralVirtualization is true: 0 = amplitude panning (simple gain
+    /// law, no HRTF/convolution/delay lines), 1 = HRTF convolution. Falls
+    /// back to amplitude panning automatically (native side) if 1 is
+    /// selected but no HRTF file has been loaded yet — hrtfFilePath (below)
+    /// stays populated across mode switches, no reload needed.
+    /// </summary>
+    public int binauralRenderMode = 0;
+
     /// <summary>If true, bypasses WFS and applies HRTF directly to each source (A/B test mode).</summary>
     public bool isSimpleBinauralSpat = false;
 

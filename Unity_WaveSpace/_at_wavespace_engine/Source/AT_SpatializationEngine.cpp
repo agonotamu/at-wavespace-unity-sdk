@@ -647,7 +647,7 @@ namespace AT
                 //
                 // In non-binaural mode wfsTargetInfo == bufferToFill, so both paths
                 // are identical and the ternary has no cost.
-                spatPlayer->processAndAdd(wfsTargetInfo);
+                spatPlayer->processAndAdd(wfsTargetInfo, m_smoothedListenerPosX, m_smoothedListenerPosY, m_smoothedListenerPosZ);
             }
         }
         else
@@ -700,7 +700,7 @@ namespace AT
                     tempInfo.startSample = 0;
                     tempInfo.numSamples  = bufferToFill.numSamples;
 
-                    player->processAndAdd(tempInfo);
+                    player->processAndAdd(tempInfo, m_smoothedListenerPosX, m_smoothedListenerPosY, m_smoothedListenerPosZ);
                     m_playersProcessed.fetch_add(1, std::memory_order_release);
                 });
             }
@@ -729,7 +729,7 @@ namespace AT
                             tempInfo.buffer      = m_playerBuffers[i].get();
                             tempInfo.startSample = 0;
                             tempInfo.numSamples  = bufferToFill.numSamples;
-                            player->processAndAdd(tempInfo);
+                            player->processAndAdd(tempInfo, m_smoothedListenerPosX, m_smoothedListenerPosY, m_smoothedListenerPosZ);
                         }
                     }
                     break;
@@ -770,6 +770,19 @@ namespace AT
 
     void SpatializationEngine::processBinauralVirtualization(const juce::AudioSourceChannelInfo& bufferToFill)
     {
+        // Mode selection: amplitude panning is used whenever explicitly
+        // selected, OR whenever HRTF mode is selected but no table is
+        // currently loaded/built — silent fallback, no error (matches the
+        // Unity "Load HRTF / still amp pan by default" UI contract).
+        const bool hrtfRequested = (m_binauralRenderMode.load(std::memory_order_relaxed) == 1);
+        const bool hrtfAvailable = m_sharedHRTFTable && m_sharedHRTFTable->isBuilt()
+                                                        && m_sharedHRTFTable->isFFTPrepared();
+        if (!hrtfRequested || !hrtfAvailable)
+        {
+            processAmplitudePanningDownmix(bufferToFill);
+            return;
+        }
+
         const int numSamples     = bufferToFill.numSamples;
         const int processorCount = static_cast<int>(m_puHrtfProcessors.size());
 
@@ -1004,6 +1017,47 @@ namespace AT
         );
     }
 
+    void SpatializationEngine::processAmplitudePanningDownmix(const juce::AudioSourceChannelInfo& bufferToFill)
+    {
+        // Deliberately simple: no HRTF, no convolution, no delay lines (no
+        // ITD) — a per-channel gain-only sine panning law derived from each
+        // virtual speaker's smoothed azimuth. See declaration comment for
+        // rationale (debug/fallback path, isolates the HRTF convolution
+        // chain as a suspect while diagnosing other issues).
+        const int numSamples = bufferToFill.numSamples;
+
+        bufferToFill.buffer->clear(bufferToFill.startSample, numSamples);
+
+        // Same "advance smoothers so azimuth reads are smoothed, not raw"
+        // fix as the HRTF path — avoids azimuth jumps/clicks on fast
+        // listener/speaker movement.
+        for (int i = 0; i < numSamples; ++i)
+            advanceGlobalSmoothers();
+
+        float* outL = bufferToFill.buffer->getWritePointer(0, bufferToFill.startSample);
+        float* outR = bufferToFill.buffer->getWritePointer(1, bufferToFill.startSample);
+
+        for (int ch = 0; ch < m_numVirtualSpeakers; ++ch)
+        {
+            const float* src = m_wfsBuffer.getReadPointer(ch);
+
+            // azimuthDeg: 0 = front, +90 = right, -90 = left, ±180 = behind
+            // (see calculateTargetAzimuthForSpeaker()). sin() gives a smooth,
+            // bounded [-1,1] pan value for the FULL ±180° range without
+            // needing to clamp or special-case front/back — amplitude-only
+            // panning cannot distinguish front from back anyway (that needs
+            // spectral cues, i.e. an actual HRTF), so front/back sources
+            // simply share L/R equally near ±180°, which is the expected/
+            // honest behaviour for this simplified mode.
+            const float azimuthRad = m_smoothedSpeakerAzimuth[ch] * juce::MathConstants<float>::pi / 180.0f;
+            const float gainR = 0.5f * (1.0f + std::sin(azimuthRad));
+            const float gainL = 0.5f * (1.0f - std::sin(azimuthRad));
+
+            juce::FloatVectorOperations::addWithMultiply(outL, src, gainL, numSamples);
+            juce::FloatVectorOperations::addWithMultiply(outR, src, gainR, numSamples);
+        }
+    }
+
     void SpatializationEngine::processSimpleBinaural(const juce::AudioSourceChannelInfo& bufferToFill)
     {
         const int numSamples = bufferToFill.numSamples;
@@ -1024,7 +1078,7 @@ namespace AT
             if (!spatPlayer->isPlaying() || !spatPlayer->hasFileLoaded())
                 continue;
 
-            spatPlayer->processAndAdd(bufferToFill);
+            spatPlayer->processAndAdd(bufferToFill, m_smoothedListenerPosX, m_smoothedListenerPosY, m_smoothedListenerPosZ);
         }
     }
 
@@ -1728,6 +1782,129 @@ namespace AT
                 break;
             }
         }
+    }
+
+    void SpatializationEngine::setPlayer6dofMaskEnabled(int uid, bool isEnabled)
+    {
+        for (auto& spatPlayer : m_spatPlayers)
+        {
+            if (spatPlayer && spatPlayer->getUID() == uid)
+            {
+                spatPlayer->setIs6dofMaskEnabled(isEnabled);
+                if (isEnabled)
+                {
+                    // Push current geometry down now that the processor
+                    // exists (lazily constructed inside setIs6dofMaskEnabled).
+                    //
+                    // IMPORTANT: read from the PENDING/staged speaker buffer
+                    // (m_pendingSpeakerPositions), NOT m_virtualSpeakerPositionsFlat.
+                    // setVirtualSpeakerTransform() only STAGES new positions;
+                    // they are only adopted into m_virtualSpeakerPositionsFlat
+                    // inside getNextAudioBlock() — i.e. only once the audio
+                    // thread has actually processed a block since the last
+                    // transform push. At Awake() time (this call happens right
+                    // after UpdateVirtualSpeakerPosition(), before any player
+                    // has started playing, often before the audio device has
+                    // even finished opening), that may not have happened yet —
+                    // m_virtualSpeakerPositionsFlat can still hold whatever it
+                    // held at the END of a PREVIOUS Play session (the native
+                    // engine persists across Play mode entries in the Editor),
+                    // producing a permanently wrong 6DOF geometry snapshot
+                    // (prepare() only runs once, guarded by
+                    // m_is6dofMaskPrepared) — intermittent, and worse whenever
+                    // the audio device is slow to start (diagnosed from
+                    // real Unity logs: implausible repeated source positions
+                    // like (5.02,0,5.02), consistent with a stale previous-
+                    // session geometry, not a fresh/zeroed one).
+                    //
+                    // Reading m_pendingSpeakerPositions directly is safe here:
+                    // it's protected by the same m_positionLock already used
+                    // to write it, and this call runs on the main/Unity
+                    // thread — never the audio thread — so there is no risk
+                    // of racing getNextAudioBlock()'s own adoption of the
+                    // same pending buffer.
+                    float freshPositions[MAX_VIRTUAL_SPEAKERS * 3];
+                    int freshCount = 0;
+                    {
+                        const juce::SpinLock::ScopedLockType lock(m_positionLock);
+                        freshCount = m_pendingSpeakerCount;
+                        std::memcpy(freshPositions, m_pendingSpeakerPositions,
+                                    (size_t) freshCount * 3 * sizeof(float));
+                    }
+
+                    if (freshCount > 0)
+                    {
+                        spatPlayer->prepare6dofMask(m_sampleRate, m_samplesPerBlock,
+                                                     freshPositions, freshCount);
+                    }
+                    else
+                    {
+                        // Nothing ever staged (should not happen given the
+                        // Awake() call order — UpdateVirtualSpeakerPosition()
+                        // always runs first — but fall back rather than feed
+                        // prepare6dofMask() a zero count).
+                        LOG_WARNING("setPlayer6dofMaskEnabled: no staged speaker "
+                                    "geometry yet, falling back to last-adopted "
+                                    "m_virtualSpeakerPositionsFlat (may be stale).");
+                        spatPlayer->prepare6dofMask(m_sampleRate, m_samplesPerBlock,
+                                                     m_virtualSpeakerPositionsFlat, m_numVirtualSpeakers);
+                    }
+                }
+                break;
+            }
+        }
+    }
+
+    void SpatializationEngine::setPlayer6dofGridRes(int uid, float gridRes)
+    {
+        for (auto& spatPlayer : m_spatPlayers)
+        {
+            if (spatPlayer && spatPlayer->getUID() == uid)
+            {
+                spatPlayer->set6dofGridRes(gridRes);
+                break;
+            }
+        }
+    }
+
+    void SpatializationEngine::setPlayer6dofMinBlockCount(int uid, int minBlockCount)
+    {
+        for (auto& spatPlayer : m_spatPlayers)
+        {
+            if (spatPlayer && spatPlayer->getUID() == uid)
+            {
+                spatPlayer->set6dofMinBlockCount(minBlockCount);
+                break;
+            }
+        }
+    }
+
+    void SpatializationEngine::setPlayer6dofNumBufferedBlocks(int uid, int numBufferedBlocks)
+    {
+        for (auto& spatPlayer : m_spatPlayers)
+        {
+            if (spatPlayer && spatPlayer->getUID() == uid)
+            {
+                spatPlayer->set6dofNumBufferedBlocks(numBufferedBlocks);
+                break;
+            }
+        }
+    }
+
+    int SpatializationEngine::getPlayer6dofNumDetectedSources(int uid)
+    {
+        for (auto& spatPlayer : m_spatPlayers)
+            if (spatPlayer && spatPlayer->getUID() == uid)
+                return spatPlayer->get6dofNumDetectedSources();
+        return 0;
+    }
+
+    int SpatializationEngine::getPlayer6dofSourcePositions(int uid, float* outPositions, int maxSources)
+    {
+        for (auto& spatPlayer : m_spatPlayers)
+            if (spatPlayer && spatPlayer->getUID() == uid)
+                return spatPlayer->get6dofSourcePositions(outPositions, maxSources);
+        return 0;
     }
 
     void SpatializationEngine::getPlayerNumChannel(int uid, int* numChannel)

@@ -168,6 +168,7 @@ public class At_MasterOutputEditor : Editor
                 virtualSpeakerRigSize    = 3.0f,
                 maxDistanceForDelay      = 10.0f,
                 isBinauralVirtualization = false,
+                binauralRenderMode       = 0,
                 isSimpleBinauralSpat     = false,
                 numVirtualSpeakers       = 2
             };
@@ -188,6 +189,7 @@ public class At_MasterOutputEditor : Editor
             masterOutput.virtualSpeakerRigSize    = outputState.virtualSpeakerRigSize;
             masterOutput.maxDistanceForDelay      = outputState.maxDistanceForDelay;
             masterOutput.isBinauralVirtualization = outputState.isBinauralVirtualization;
+            masterOutput.binauralRenderMode       = outputState.binauralRenderMode;
             masterOutput.isSimpleBinauralSpat     = outputState.isSimpleBinauralSpat;
             masterOutput.isNearFieldCorrection    = outputState.isNearFieldCorrection;
             masterOutput.hrtfDistance             = outputState.hrtfDistance;
@@ -1042,7 +1044,7 @@ public class At_MasterOutputEditor : Editor
     private void DrawBinauralVirtualizationSection()
     {
         EditorGUILayout.BeginHorizontal();
-        GUILayout.Label("Binaural Virtualization", GUILayout.Width(150));
+        GUILayout.Label("Stereo Downmix", GUILayout.Width(150));
         bool newBin = EditorGUILayout.Toggle(outputState.isBinauralVirtualization, GUILayout.Width(20));
         if (newBin != outputState.isBinauralVirtualization)
         {
@@ -1113,7 +1115,7 @@ public class At_MasterOutputEditor : Editor
             if (deviceMax > 0 && targetVS > deviceMax)
             {
                 EditorGUILayout.HelpBox(
-                    $"Binaural Virtualization cannot be disabled: {targetVS} Virtual Speakers " +
+                    $"Stereo Downmix cannot be disabled: {targetVS} Virtual Speakers " +
                     $"exceed the {deviceMax} physical output channels of the selected device.\n" +
                     "To disable it: reduce \"Num. Virtual Speakers\" or select a device " +
                     "with enough physical output channels.",
@@ -1125,56 +1127,77 @@ public class At_MasterOutputEditor : Editor
 
         EditorGUILayout.BeginVertical("box");
 
+        // ── Rendering algorithm ─────────────────────────────────────────────
         EditorGUILayout.BeginHorizontal();
-        GUILayout.Label("HRTF File:", GUILayout.Width(80));
-        // Display the relative path (e.g. "HRTF/MySet.txt") or a placeholder
-        string displayPath = string.IsNullOrEmpty(outputState.hrtfFilePath)
-            ? "[None - Using Default]"
-            : outputState.hrtfFilePath;
-        GUILayout.Label(displayPath, EditorStyles.wordWrappedLabel);
-        EditorGUILayout.EndHorizontal();
-
-        EditorGUILayout.BeginHorizontal();
-        GUILayout.FlexibleSpace();
-        if (GUILayout.Button("Load HRTF File (.txt)", GUILayout.Width(150), GUILayout.Height(25)))
+        GUILayout.Label("Rendering", GUILayout.Width(80));
+        string[] renderModeOptions = { "Amplitude panning", "Binaural" };
+        int newRenderMode = EditorGUILayout.Popup(outputState.binauralRenderMode, renderModeOptions, GUILayout.Width(160));
+        if (newRenderMode != outputState.binauralRenderMode)
         {
-            // Defer OpenFilePanel outside the current layout pass.
-            // Calling it directly triggers ExitGUIException, which aborts the pass
-            // before EndHorizontal and EndVertical are reached.
-            m_pendingHRTFLoad = true;
-            EditorApplication.delayCall += ExecutePendingHRTFLoad;
-        }
-        if (GUILayout.Button("Use Default HRTF", GUILayout.Width(150), GUILayout.Height(25)))
-        {
-            outputState.hrtfFilePath  = "";
-            masterOutput.hrtfFilePath = "";
+            outputState.binauralRenderMode  = newRenderMode;
+            masterOutput.binauralRenderMode = newRenderMode;
             if (Application.isPlaying && masterOutput.isInitialized)
-                masterOutput.LoadDefaultHRTF();
-            shouldSave = true;
-        }
-        GUILayout.FlexibleSpace();
-        EditorGUILayout.EndHorizontal();
-
-        GUILayout.Label("Sélectionne un fichier .txt HRTF dans StreamingAssets/HRTF. " +
-                        "Le chemin est stocké relatif à StreamingAssets (portable Mac/Windows).",
-            EditorStyles.wordWrappedMiniLabel);
-
-        // ── HRTF truncation ───────────────────────────────────────────────
-        GUILayout.Space(6);
-        EditorGUILayout.BeginHorizontal();
-        GUILayout.Label("Limit HRTF to 512 samples", GUILayout.Width(200));
-        bool newTrunc = EditorGUILayout.Toggle(outputState.isHrtfTruncated, GUILayout.Width(20));
-        if (newTrunc != outputState.isHrtfTruncated)
-        {
-            outputState.isHrtfTruncated  = newTrunc;
-            masterOutput.isHrtfTruncated = newTrunc;
+                masterOutput.SetBinauralRenderMode(newRenderMode);
             shouldSave = true;
         }
         EditorGUILayout.EndHorizontal();
         GUILayout.Label(
-            "Truncates each HRTF impulse response to 512 samples before convolution. " +
-            "Reduces CPU load at high virtual-speaker counts (≥ 64) at the cost of minor low-frequency accuracy.",
+            "Amplitude panning: simple per-channel gain law, no HRTF/convolution/delay lines — " +
+            "cheap, no elevation/front-back cues. Binaural: HRTF convolution (below).",
             EditorStyles.wordWrappedMiniLabel);
+
+        // ── HRTF file selection — only relevant/shown in Binaural mode ──────
+        if (outputState.binauralRenderMode == 1)
+        {
+            GUILayout.Space(6);
+
+            EditorGUILayout.BeginHorizontal();
+            GUILayout.FlexibleSpace();
+            if (GUILayout.Button("Load HRTF File (.txt)", GUILayout.Width(150), GUILayout.Height(25)))
+            {
+                // Defer OpenFilePanel outside the current layout pass.
+                // Calling it directly triggers ExitGUIException, which aborts the pass
+                // before EndHorizontal and EndVertical are reached.
+                m_pendingHRTFLoad = true;
+                EditorApplication.delayCall += ExecutePendingHRTFLoad;
+            }
+            GUILayout.FlexibleSpace();
+            EditorGUILayout.EndHorizontal();
+
+            // Comment line: placeholder while no file is loaded, actual file
+            // name once one is — the file itself stays loaded across
+            // Amplitude panning <-> Binaural toggles (only the dropdown
+            // selection changes; no reload needed to switch back).
+            string hrtfStatus = string.IsNullOrEmpty(outputState.hrtfFilePath)
+                ? "No HRTF file loaded — falling back to amplitude panning"
+                : outputState.hrtfFilePath;
+            EditorGUILayout.BeginHorizontal();
+            GUILayout.FlexibleSpace();
+            GUILayout.Label(hrtfStatus, EditorStyles.wordWrappedMiniLabel, GUILayout.Width(260));
+            GUILayout.FlexibleSpace();
+            EditorGUILayout.EndHorizontal();
+
+            GUILayout.Label("Sélectionne un fichier .txt HRTF dans StreamingAssets/HRTF. " +
+                            "Le chemin est stocké relatif à StreamingAssets (portable Mac/Windows).",
+                EditorStyles.wordWrappedMiniLabel);
+
+            // ── HRTF truncation ───────────────────────────────────────────────
+            GUILayout.Space(6);
+            EditorGUILayout.BeginHorizontal();
+            GUILayout.Label("Limit HRTF to 512 samples", GUILayout.Width(200));
+            bool newTrunc = EditorGUILayout.Toggle(outputState.isHrtfTruncated, GUILayout.Width(20));
+            if (newTrunc != outputState.isHrtfTruncated)
+            {
+                outputState.isHrtfTruncated  = newTrunc;
+                masterOutput.isHrtfTruncated = newTrunc;
+                shouldSave = true;
+            }
+            EditorGUILayout.EndHorizontal();
+            GUILayout.Label(
+                "Truncates each HRTF impulse response to 512 samples before convolution. " +
+                "Reduces CPU load at high virtual-speaker counts (≥ 64) at the cost of minor low-frequency accuracy.",
+                EditorStyles.wordWrappedMiniLabel);
+        }
 
         EditorGUILayout.EndVertical();
     }

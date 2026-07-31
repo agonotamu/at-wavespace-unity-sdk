@@ -32,6 +32,10 @@
             file="Source/HRTFProcessor.cpp"/>
       <FILE id="QwskqH" name="HRTFTable.h" compile="0" resource="0" file="Source/HRTFTable.h"/>
       <FILE id="HVxFbc" name="HRTFTable.cpp" compile="1" resource="0" file="Source/HRTFTable.cpp"/>
+      <FILE id="TV7y5H" name="AT_SixDofMaskProcessor.h" compile="0" resource="0"
+            file="Source/AT_SixDofMaskProcessor.h"/>
+      <FILE id="Ro6uDR" name="AT_SixDofMaskProcessor.cpp" compile="1" resource="0"
+            file="Source/AT_SixDofMaskProcessor.cpp"/>
       <FILE id="SBRK2M" name="SOFAReader.h" compile="0" resource="0" file="Source/SOFAReader.h"/>
       <FILE id="mKr09U" name="SOFAReader.cpp" compile="1" resource="0" file="Source/SOFAReader.cpp"/>
       <FILE id="VvG2LJ" name="AT_WfsPrefilter.h" compile="0" resource="0"

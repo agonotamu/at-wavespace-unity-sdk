@@ -293,7 +293,8 @@ namespace AT
         return sample;
     }
 
-    void SpatPlayer::processAndAdd(const juce::AudioSourceChannelInfo& bufferToFill) {
+    void SpatPlayer::processAndAdd(const juce::AudioSourceChannelInfo& bufferToFill,
+                                    float listenerX, float listenerY, float listenerZ) {
 
         // Output fade for click-free stop (triggered by stopWithFade()).
         // Applied at the OUTPUT stage — fading the input would leave the WFS
@@ -520,17 +521,46 @@ namespace AT
         {
             const int N = bufferToFill.numSamples;
 
+            // 6DOF SOURCE MASKING — opt-in (see AT_SixDofMaskProcessor). When
+            // OFF (the default), every branch below is byte-for-byte the
+            // original fast path: zero added cost for players that don't use
+            // this feature. When ON, the block-level SIMD addWithMultiply()
+            // calls are replaced with a per-sample loop so each channel can
+            // carry its own mask gain (unlike fade/distance gain, which are
+            // identical across channels) — analysis runs on the player's own
+            // pre-mix buffer (m_puAsci->buffer), never on the shared dst.
+            const bool sixDofActive = (m_puSixDofMask != nullptr && m_is6dofMaskEnabled);
+            if (sixDofActive)
+            {
+                m_puSixDofMask->pushAnalysisBlock(*m_puAsci->buffer, m_puAsci->startSample, N, numChannelsToProcess);
+                m_puSixDofMask->updateTargetGains(listenerX, listenerY, listenerZ, numChannelsToProcess);
+            }
+
             if (!m_isFadingOut && !m_isFadingIn && !m_distanceGainSmoother.isSmoothing())
             {
                 // ── No fade, distance gain settled : uniform scalar multiplier ──
                 // addWithMultiply(dst, src, scalar, N):  dst[i] += src[i] * scalar
                 const float distanceGain = m_distanceGainSmoother.getTargetValue();
                 m_distanceGainSmoother.skip(N);   // keep sample-accurate bookkeeping
-                for (int ch = 0; ch < numChannelsToProcess; ++ch)
+
+                if (sixDofActive)
                 {
-                    const float* src = m_puAsci->buffer->getReadPointer(ch, m_puAsci->startSample);
-                    float* dst = bufferToFill.buffer->getWritePointer(ch, bufferToFill.startSample);
-                    juce::FloatVectorOperations::addWithMultiply(dst, src, distanceGain, N);
+                    for (int ch = 0; ch < numChannelsToProcess; ++ch)
+                    {
+                        const float* src = m_puAsci->buffer->getReadPointer(ch, m_puAsci->startSample);
+                        float* dst = bufferToFill.buffer->getWritePointer(ch, bufferToFill.startSample);
+                        for (int s = 0; s < N; ++s)
+                            dst[s] += src[s] * distanceGain * m_puSixDofMask->getNextChannelGain(ch);
+                    }
+                }
+                else
+                {
+                    for (int ch = 0; ch < numChannelsToProcess; ++ch)
+                    {
+                        const float* src = m_puAsci->buffer->getReadPointer(ch, m_puAsci->startSample);
+                        float* dst = bufferToFill.buffer->getWritePointer(ch, bufferToFill.startSample);
+                        juce::FloatVectorOperations::addWithMultiply(dst, src, distanceGain, N);
+                    }
                 }
             }
             else
@@ -560,7 +590,15 @@ namespace AT
                 {
                     const float* src = m_puAsci->buffer->getReadPointer(ch, m_puAsci->startSample);
                     float* dst = bufferToFill.buffer->getWritePointer(ch, bufferToFill.startSample);
-                    juce::FloatVectorOperations::addWithMultiply(dst, src, m_puGainRamp.get(), N);
+                    if (sixDofActive)
+                    {
+                        for (int s = 0; s < N; ++s)
+                            dst[s] += src[s] * m_puGainRamp[s] * m_puSixDofMask->getNextChannelGain(ch);
+                    }
+                    else
+                    {
+                        juce::FloatVectorOperations::addWithMultiply(dst, src, m_puGainRamp.get(), N);
+                    }
                 }
 
                 if (m_isFadingOut && m_fadeGain <= 0.0f)
@@ -793,6 +831,120 @@ namespace AT
 
     AT::Spatializer* SpatPlayer::getSpatializer(){
         return m_puSpatializer.get();
+    }
+
+    // ========================================================================
+    // 6DOF SOURCE MASKING
+    // ========================================================================
+
+    void SpatPlayer::setIs6dofMaskEnabled(bool isEnabled)
+    {
+        // NOT real-time safe (allocates on first enable) — same contract as
+        // setIs3D(). Must not be called from the audio thread.
+        if (isEnabled && m_puSixDofMask == nullptr)
+        {
+            m_puSixDofMask = std::make_unique<AT::SixDofMaskProcessor>();
+            // Prepared lazily here rather than in the constructor: the mic/
+            // virtual-speaker positions and channel count are only known
+            // once the file is loaded and the engine geometry is live. If
+            // prepareToPlay() already ran, this call is a no-op guard —
+            // actual prepare() happens in prepareToPlay()/setFilePath() once
+            // m_numChannel and m_samplesPerBlock are both known (see there).
+        }
+        m_is6dofMaskEnabled = isEnabled;
+        if (m_puSixDofMask != nullptr)
+            m_puSixDofMask->setEnabled(isEnabled);
+
+        if (!isEnabled)
+        {
+            // Genuine disable: allow the NEXT enable to re-prepare (e.g. if
+            // the audio file / channel count changed while masking was off).
+            m_is6dofMaskPrepared = false;
+        }
+    }
+
+    bool SpatPlayer::getIs6dofMaskEnabled() const
+    {
+        return m_is6dofMaskEnabled;
+    }
+
+    void SpatPlayer::prepare6dofMask(double sampleRate, int maxBlockSize,
+                                       const float* speakerPositionsFlat, int numSpeakerPositions)
+    {
+        if (m_puSixDofMask == nullptr)
+            return; // 6DOF masking not enabled for this player — nothing to do
+
+        if (m_is6dofMaskPrepared)
+            return; // ALREADY prepared for this enable cycle — do NOT re-run
+                     // SixDofMaskProcessor::prepare() (full realloc + background
+                     // thread join/restart) on every redundant call. This guard
+                     // is what actually fixes the crash: without it, a caller
+                     // pushing "isEnabled=true" every audio callback (as the
+                     // first Unity integration did) reallocates every ~16ms
+                     // while the audio thread concurrently reads m_windowBuffer/
+                     // m_channelGainSmoothers — undefined behaviour, crashes
+                     // within ~1s, and is dramatically slower in Debug builds
+                     // (checked-iterator std::vector churn).
+
+        // 2D player channel i is assumed to correspond 1:1 to virtual speaker
+        // i (same convention already used for the plain 2D channel-copy path
+        // and for WFS) — clamp to whichever count is smaller in case the
+        // audio file has fewer channels than the current speaker rig.
+        const int numChannels = std::min(m_numChannel, numSpeakerPositions);
+        if (numChannels <= 0)
+        {
+            jassertfalse; // called before the audio file / speaker rig is ready — fix call order
+            return;
+        }
+
+        m_puSixDofMask->prepare(numChannels, sampleRate, maxBlockSize, speakerPositionsFlat);
+        m_puSixDofMask->setEnabled(m_is6dofMaskEnabled);
+        m_is6dofMaskPrepared = true;
+    }
+
+    void SpatPlayer::set6dofGridRes(float gridRes)
+    {
+        if (m_puSixDofMask != nullptr)
+            m_puSixDofMask->setGridRes(gridRes);
+    }
+
+    float SpatPlayer::get6dofGridRes() const
+    {
+        return m_puSixDofMask != nullptr ? m_puSixDofMask->getGridRes() : 0.02f;
+    }
+
+    void SpatPlayer::set6dofMinBlockCount(int minBlockCount)
+    {
+        if (m_puSixDofMask != nullptr)
+            m_puSixDofMask->setMinBlockCount(minBlockCount);
+    }
+
+    int SpatPlayer::get6dofMinBlockCount() const
+    {
+        return m_puSixDofMask != nullptr ? m_puSixDofMask->getMinBlockCount() : 4;
+    }
+
+    void SpatPlayer::set6dofNumBufferedBlocks(int numBufferedBlocks)
+    {
+        if (m_puSixDofMask != nullptr)
+            m_puSixDofMask->setNumBufferedBlocks(numBufferedBlocks);
+    }
+
+    int SpatPlayer::get6dofNumBufferedBlocks() const
+    {
+        return m_puSixDofMask != nullptr ? m_puSixDofMask->getNumBufferedBlocks() : 1;
+    }
+
+    int SpatPlayer::get6dofNumDetectedSources() const
+    {
+        return m_puSixDofMask != nullptr ? m_puSixDofMask->getNumDetectedSources() : 0;
+    }
+
+    int SpatPlayer::get6dofSourcePositions(float* outPositions, int maxSources) const
+    {
+        return m_puSixDofMask != nullptr
+             ? m_puSixDofMask->getDetectedSourcePositions(outPositions, maxSources)
+             : 0;
     }
 
     void SpatPlayer::getMeters(float* meters, int arraySize){

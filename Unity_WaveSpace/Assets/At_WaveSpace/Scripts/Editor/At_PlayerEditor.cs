@@ -57,6 +57,10 @@ public class At_PlayerEditor : Editor
     private SerializedProperty sp_highPassFc;
     private SerializedProperty sp_highPassGain;
     private SerializedProperty sp_highPassBypass;
+    private SerializedProperty sp_is6dofMaskEnabled;
+    private SerializedProperty sp_sixDofGridRes;
+    private SerializedProperty sp_sixDofMinBlockCount;
+    private SerializedProperty sp_sixDofNumBufferedBlocks;
     #endregion
 
     #region Initialization
@@ -79,6 +83,10 @@ public class At_PlayerEditor : Editor
         sp_highPassGain          = serializedObject.FindProperty("highPassGain");
         sp_lowPassBypass         = serializedObject.FindProperty("lowPassBypass");
         sp_highPassBypass        = serializedObject.FindProperty("highPassBypass");
+        sp_is6dofMaskEnabled     = serializedObject.FindProperty("is6dofMaskEnabled");
+        sp_sixDofGridRes         = serializedObject.FindProperty("sixDofGridRes");
+        sp_sixDofMinBlockCount   = serializedObject.FindProperty("sixDofMinBlockCount");
+        sp_sixDofNumBufferedBlocks = serializedObject.FindProperty("sixDofNumBufferedBlocks");
 
         previousIsEditor  = Application.isEditor;
         previousIsPlaying = Application.isPlaying;
@@ -113,6 +121,10 @@ public class At_PlayerEditor : Editor
             playerState.highPassFc             = 20.0f;
             playerState.lowPassBypass          = true;
             playerState.highPassBypass         = false;
+            playerState.is6dofMaskEnabled      = false;
+            playerState.sixDofGridRes          = 0.02f;
+            playerState.sixDofMinBlockCount    = 4;
+            playerState.sixDofNumBufferedBlocks = 1;
         }
 
         LoadParametersFromState();
@@ -190,6 +202,7 @@ public class At_PlayerEditor : Editor
         DrawPlaybackSpeed();
 
         if (playerState.is3D) Draw3DParametersSection();
+        if (!playerState.is3D) Draw6dofMaskSection();
 
         UpdatePlayerParameters();
     }
@@ -398,6 +411,88 @@ public class At_PlayerEditor : Editor
         EditorGUILayout.EndHorizontal();
         GUILayout.Space(15);
     }
+
+    /// <summary>
+    /// "6DOF Source Masking" — listener-position-dependent per-channel gain
+    /// for 2D players whose channels match the current virtual speaker rig
+    /// (e.g. a captured ring/sphere). Only meaningful in 2D mode — hidden
+    /// entirely when the player is in 3D/WFS mode. See AT_SixDofMaskProcessor.
+    /// </summary>
+    private void Draw6dofMaskSection()
+    {
+        HorizontalLine(Color.black);
+        GUILayout.Space(5);
+
+        GUILayout.Label("6DOF Source Masking", EditorStyles.boldLabel);
+
+        EditorGUILayout.BeginHorizontal();
+        GUILayout.Label("Enabled", GUILayout.Width(150));
+        bool newEnabled = EditorGUILayout.Toggle(playerState.is6dofMaskEnabled, GUILayout.Width(20));
+        if (newEnabled != playerState.is6dofMaskEnabled) { playerState.is6dofMaskEnabled = newEnabled; shouldSave = true; }
+        EditorGUILayout.EndHorizontal();
+
+        if (!playerState.is6dofMaskEnabled)
+        {
+            GUILayout.Space(10);
+            return;
+        }
+
+        GUILayout.Space(5);
+
+        EditorGUILayout.BeginHorizontal();
+        GUILayout.Label("Grid Resolution (m)", GUILayout.Width(150));
+        string gridResStr = EditorGUILayout.TextField(playerState.sixDofGridRes.ToString("F3"), GUILayout.Width(60));
+        if (float.TryParse(gridResStr,
+                System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out float pgr))
+        {
+            pgr = Mathf.Clamp(pgr, 0.001f, 2f);
+            if (!Mathf.Approximately(pgr, playerState.sixDofGridRes)) { playerState.sixDofGridRes = pgr; shouldSave = true; }
+        }
+        EditorGUILayout.EndHorizontal();
+        EditorGUILayout.HelpBox(
+            "Rounding resolution for source mode-detection. 0.02 is validated on clean " +
+            "synthetic material — real/reverberant recordings typically need 0.1-0.3.",
+            MessageType.None);
+
+        GUILayout.Space(5);
+
+        EditorGUILayout.BeginHorizontal();
+        GUILayout.Label("Min Block Count", GUILayout.Width(150));
+        string minCountStr = EditorGUILayout.TextField(playerState.sixDofMinBlockCount.ToString(), GUILayout.Width(60));
+        if (int.TryParse(minCountStr, out int pmc))
+        {
+            pmc = Mathf.Clamp(pmc, 1, 64);
+            if (pmc != playerState.sixDofMinBlockCount) { playerState.sixDofMinBlockCount = pmc; shouldSave = true; }
+        }
+        EditorGUILayout.EndHorizontal();
+
+        GUILayout.Space(5);
+
+        EditorGUILayout.BeginHorizontal();
+        GUILayout.Label("Buffered Blocks", GUILayout.Width(150));
+        string numBufStr = EditorGUILayout.TextField(playerState.sixDofNumBufferedBlocks.ToString(), GUILayout.Width(60));
+        if (int.TryParse(numBufStr, out int pnb))
+        {
+            pnb = Mathf.Clamp(pnb, 1, 16);
+            if (pnb != playerState.sixDofNumBufferedBlocks) { playerState.sixDofNumBufferedBlocks = pnb; shouldSave = true; }
+        }
+        EditorGUILayout.EndHorizontal();
+        EditorGUILayout.HelpBox(
+            "Audio blocks accumulated per localization analysis window. 1 = lowest latency " +
+            "(one block up to 4096 samples @ 48 kHz is ~85 ms) — try this first.",
+            MessageType.None);
+
+        if (player.isPlaying)
+        {
+            GUILayout.Space(5);
+            int numSources = player.Get6dofSourceCount();
+            EditorGUILayout.LabelField("Detected sources", numSources.ToString());
+        }
+
+        GUILayout.Space(10);
+    }
     #endregion
 
     #region Parameter Synchronization
@@ -419,6 +514,10 @@ public class At_PlayerEditor : Editor
         player.highPassGain           = playerState.highPassGain;
         player.lowPassBypass          = playerState.lowPassBypass;
         player.highPassBypass         = playerState.highPassBypass;
+        player.is6dofMaskEnabled      = playerState.is6dofMaskEnabled;
+        player.sixDofGridRes          = playerState.sixDofGridRes;
+        player.sixDofMinBlockCount    = playerState.sixDofMinBlockCount;
+        player.sixDofNumBufferedBlocks = playerState.sixDofNumBufferedBlocks;
     }
 
     /// <summary>
@@ -453,6 +552,10 @@ public class At_PlayerEditor : Editor
         Sync(ref player.highPassGain,           playerState.highPassGain);
         Sync(ref player.lowPassBypass,          playerState.lowPassBypass);
         Sync(ref player.highPassBypass,         playerState.highPassBypass);
+        Sync(ref player.is6dofMaskEnabled,      playerState.is6dofMaskEnabled);
+        Sync(ref player.sixDofGridRes,          playerState.sixDofGridRes);
+        Sync(ref player.sixDofMinBlockCount,    playerState.sixDofMinBlockCount);
+        Sync(ref player.sixDofNumBufferedBlocks, playerState.sixDofNumBufferedBlocks);
 
         if (!changed) return;
 
@@ -472,6 +575,10 @@ public class At_PlayerEditor : Editor
         sp_highPassGain.floatValue           = playerState.highPassGain;
         sp_lowPassBypass.boolValue           = playerState.lowPassBypass;
         sp_highPassBypass.boolValue          = playerState.highPassBypass;
+        sp_is6dofMaskEnabled.boolValue       = playerState.is6dofMaskEnabled;
+        sp_sixDofGridRes.floatValue          = playerState.sixDofGridRes;
+        sp_sixDofMinBlockCount.intValue      = playerState.sixDofMinBlockCount;
+        sp_sixDofNumBufferedBlocks.intValue  = playerState.sixDofNumBufferedBlocks;
         serializedObject.ApplyModifiedProperties();
     }
     #endregion

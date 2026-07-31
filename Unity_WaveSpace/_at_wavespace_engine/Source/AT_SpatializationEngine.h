@@ -187,6 +187,21 @@ namespace AT
         void setIsPrefilterAllPlayers(bool isPrefilter);
 
         // ============================================================================
+        // 6DOF SOURCE MASKING (2D players only) — routes to the matching
+        // SpatPlayer by uid, same lookup pattern as getPlayerSpeakerMask().
+        // Enabling also pushes the engine's current virtual speaker geometry
+        // down to the player (see SpatPlayer::prepare6dofMask) — the 2D
+        // player's channels are assumed to match m_virtualSpeakerPositionsFlat
+        // 1:1, same convention as WFS.
+        // ============================================================================
+        void setPlayer6dofMaskEnabled(int uid, bool isEnabled);
+        void setPlayer6dofGridRes(int uid, float gridRes);
+        void setPlayer6dofMinBlockCount(int uid, int minBlockCount);
+        void setPlayer6dofNumBufferedBlocks(int uid, int numBufferedBlocks);
+        int  getPlayer6dofNumDetectedSources(int uid);
+        int  getPlayer6dofSourcePositions(int uid, float* outPositions, int maxSources);
+
+        // ============================================================================
         // BINAURAL VIRTUALIZATION
         // ============================================================================
 
@@ -201,6 +216,20 @@ namespace AT
          * @deprecated
          */
         void setIsBinauralVirtualization(bool isBinauralVirtualization);
+
+        /**
+         * @brief Selects the stereo-downmix rendering algorithm: 0 = amplitude
+         *        panning (simple gain law, no HRTF/convolution/delay lines —
+         *        see processAmplitudePanningDownmix()), 1 = HRTF convolution
+         *        (existing HRTFProcessor path, unchanged).
+         *
+         * If mode 1 is requested but no HRTF table is currently loaded/built,
+         * processBinauralVirtualization() automatically falls back to
+         * amplitude panning (silent fallback, no error) — matches the Unity
+         * "Load HRTF / still amp pan by default" UI contract.
+         */
+        void setBinauralRenderMode(int mode) { m_binauralRenderMode.store(mode, std::memory_order_relaxed); }
+        int  getBinauralRenderMode() const { return m_binauralRenderMode.load(std::memory_order_relaxed); }
 
         /**
          * @brief Loads HRTF data from a text file into all HRTF processors
@@ -377,6 +406,16 @@ namespace AT
 
         void processPlayersWFS(const juce::AudioSourceChannelInfo& bufferToFill);
         void processBinauralVirtualization(const juce::AudioSourceChannelInfo& bufferToFill);
+
+        /**
+         * @brief Simple amplitude-only stereo downmix — sums each virtual
+         * speaker's WFS buffer into L/R with a per-channel gain derived from
+         * its smoothed azimuth (sine panning law), no HRTF, no convolution,
+         * no delay lines (no ITD). Deliberately cheap: intended as a fast,
+         * easy-to-reason-about fallback/debug path while diagnosing issues
+         * elsewhere in the binaural chain (6DOF masking crash investigation).
+         */
+        void processAmplitudePanningDownmix(const juce::AudioSourceChannelInfo& bufferToFill);
         void processSimpleBinaural(const juce::AudioSourceChannelInfo& bufferToFill);
 
         // ============================================================================
@@ -384,6 +423,9 @@ namespace AT
         // ============================================================================
 
         bool m_isBinauralVirtualization;
+
+        /// 0 = amplitude panning (default), 1 = HRTF. See setBinauralRenderMode().
+        std::atomic<int> m_binauralRenderMode { 0 };
 
         /// HRTF processors for binaural rendering. Populated only when m_isBinauralVirtualization is true.
         std::vector<std::unique_ptr<HRTFProcessor>> m_puHrtfProcessors;

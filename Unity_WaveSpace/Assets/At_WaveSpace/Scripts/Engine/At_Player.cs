@@ -79,6 +79,46 @@ public class At_Player : MonoBehaviour
 
     /// <summary>If true, the high-pass filter is bypassed.</summary>
     public bool highPassBypass;
+
+    /// <summary>
+    /// If true, applies listener-position-dependent 6DOF source masking to
+    /// this player's output (2D mode only). See AT_SixDofMaskProcessor.
+    /// </summary>
+    public bool is6dofMaskEnabled;
+
+    /// <summary>Grid resolution (metres) for 6DOF source mode-detection.</summary>
+    public float sixDofGridRes;
+
+    /// <summary>Minimum matching-estimate count for a 6DOF source to be accepted.</summary>
+    public int sixDofMinBlockCount;
+
+    /// <summary>Number of audio blocks buffered into one 6DOF localization window.</summary>
+    public int sixDofNumBufferedBlocks;
+    #endregion
+
+    #region Public Variables — 6DOF Detected Sources (Runtime State)
+    /// <summary>
+    /// Maximum number of simultaneously detected 6DOF sources. Must match
+    /// AT::SixDofMaskProcessor::MAX_SOURCES in the C++ library.
+    /// </summary>
+    public const int MAX_6DOF_SOURCES = 6;
+
+    /// <summary>
+    /// Number of 6DOF sources currently detected by the native processor
+    /// (0 if masking is disabled, not yet detected, or in bypass fallback
+    /// after repeated detection failures — see isInBypassFallback semantics
+    /// in AT_SixDofMaskProcessor). Updated once per Update() via
+    /// Refresh6dofSourcePositions().
+    /// </summary>
+    public int num6dofDetectedSources = 0;
+
+    /// <summary>
+    /// Flat [x0,y0,z0,x1,y1,z1,...] positions of currently detected 6DOF
+    /// sources, world/engine frame. Only the first `num6dofDetectedSources`
+    /// entries are valid. Pre-allocated to MAX_6DOF_SOURCES*3 to avoid
+    /// per-frame GC allocation, same rationale as delayArray/volumeArray.
+    /// </summary>
+    public readonly float[] sixDofSourcePositionsFlat = new float[MAX_6DOF_SOURCES * 3];
     #endregion
 
     #region Public Variables — Runtime State
@@ -207,6 +247,10 @@ public class At_Player : MonoBehaviour
         getMeters(spatID, meters, numChannelsInAudioFile);
 
         AT_WS_setPlayerRealTimeParameter(spatID, gain, playbackSpeed, attenuation, minDistance);
+        Update6dofMaskParameters();
+
+        if (is6dofMaskEnabled)
+            Refresh6dofSourcePositions();
 
         if (is3D)
         {
@@ -290,6 +334,10 @@ public class At_Player : MonoBehaviour
             highPassFc             = playerState.highPassFc;
             lowPassGain            = playerState.lowPassGain;
             numChannelsInAudioFile = playerState.numChannelsInAudiofile;
+            is6dofMaskEnabled      = playerState.is6dofMaskEnabled;
+            sixDofGridRes          = playerState.sixDofGridRes;
+            sixDofMinBlockCount    = playerState.sixDofMinBlockCount;
+            sixDofNumBufferedBlocks = playerState.sixDofNumBufferedBlocks;
         }
 
         // Fallback: read the audio file metadata if serialized data are not valid.
@@ -315,6 +363,11 @@ public class At_Player : MonoBehaviour
         initMeters();
 
         UpdateSpatialParameters();
+
+        // Must happen AFTER AT_WS_setPlayerFilePath(): 6DOF masking needs the
+        // player's channel count, which the native side only knows once the
+        // audio file is loaded (see SpatPlayer::prepare6dofMask).
+        Update6dofMaskParameters();
 
         if (isPlayingOnAwake) StartPlaying();
 
@@ -361,6 +414,139 @@ public class At_Player : MonoBehaviour
     }
     #endregion
 
+    #region 6DOF Source Masking
+    // Cache of the last values actually pushed to the native side — avoids
+    // re-triggering AT_WS_setPlayer6dofMaskEnabled(uid, true) every frame,
+    // which would otherwise re-run the native prepare() path repeatedly
+    // (full buffer realloc + background-thread restart, unsafe concurrently
+    // with the audio thread) — see AT_SpatPlayer::prepare6dofMask guard.
+    private bool  m_last6dofEnabled;
+    private float m_last6dofGridRes;
+    private int   m_last6dofMinBlockCount;
+    private int   m_last6dofNumBufferedBlocks;
+    private bool  m_6dofParamsPushedOnce;
+
+    /// <summary>
+    /// Pushes the current 6DOF masking parameters (enabled flag, gridRes,
+    /// minBlockCount, numBufferedBlocks) to the native player, but ONLY when
+    /// they actually changed since the last call — safe to call every
+    /// Update() without re-triggering native (re-)allocation each frame.
+    /// </summary>
+    public void Update6dofMaskParameters()
+    {
+        bool unchanged = m_6dofParamsPushedOnce
+            && m_last6dofEnabled == is6dofMaskEnabled
+            && Mathf.Approximately(m_last6dofGridRes, sixDofGridRes)
+            && m_last6dofMinBlockCount == sixDofMinBlockCount
+            && m_last6dofNumBufferedBlocks == sixDofNumBufferedBlocks;
+        if (unchanged) return;
+
+        AT_WS_setPlayer6dofMaskEnabled(spatID, is6dofMaskEnabled);
+        if (is6dofMaskEnabled)
+        {
+            AT_WS_setPlayer6dofGridRes(spatID, sixDofGridRes);
+            AT_WS_setPlayer6dofMinBlockCount(spatID, sixDofMinBlockCount);
+            AT_WS_setPlayer6dofNumBufferedBlocks(spatID, sixDofNumBufferedBlocks);
+        }
+
+        m_last6dofEnabled           = is6dofMaskEnabled;
+        m_last6dofGridRes           = sixDofGridRes;
+        m_last6dofMinBlockCount     = sixDofMinBlockCount;
+        m_last6dofNumBufferedBlocks = sixDofNumBufferedBlocks;
+        m_6dofParamsPushedOnce      = true;
+    }
+
+    /// <summary>
+    /// Refreshes num6dofDetectedSources and sixDofSourcePositionsFlat from
+    /// the native processor. Cheap (a handful of floats) — safe to call
+    /// every Update() while masking is enabled, mirroring getMeters().
+    /// Logs to the console when the detected set actually changes (not every
+    /// frame) — see m_last6dofLoggedCount/m_last6dofLoggedPositions.
+    /// </summary>
+    public unsafe void Refresh6dofSourcePositions()
+    {
+        if (!is6dofMaskEnabled) { num6dofDetectedSources = 0; return; }
+
+        AT_WS_getPlayer6dofSourceCount(spatID, out num6dofDetectedSources);
+
+        fixed (float* ptr = sixDofSourcePositionsFlat)
+        {
+            AT_WS_getPlayer6dofSourcePositions(spatID, (IntPtr)ptr, sixDofSourcePositionsFlat.Length);
+        }
+
+        LogDetectedSourcesIfChanged();
+    }
+
+    // Cache used only to decide whether the detected set changed enough to
+    // warrant a new console log line — avoids spamming Debug.Log every frame
+    // while sources are stable (Update() calls Refresh6dofSourcePositions()
+    // every frame).
+    private int m_last6dofLoggedCount = -1;
+    private readonly float[] m_last6dofLoggedPositions = new float[MAX_6DOF_SOURCES * 3];
+    private const float LOG_POSITION_EPSILON = 0.01f; // metres
+
+    private void LogDetectedSourcesIfChanged()
+    {
+        bool changed = num6dofDetectedSources != m_last6dofLoggedCount;
+        if (!changed)
+        {
+            for (int i = 0; i < num6dofDetectedSources * 3; i++)
+            {
+                if (Mathf.Abs(sixDofSourcePositionsFlat[i] - m_last6dofLoggedPositions[i]) > LOG_POSITION_EPSILON)
+                {
+                    changed = true;
+                    break;
+                }
+            }
+        }
+        if (!changed) return;
+
+        System.Array.Copy(sixDofSourcePositionsFlat, m_last6dofLoggedPositions, sixDofSourcePositionsFlat.Length);
+        m_last6dofLoggedCount = num6dofDetectedSources;
+
+        if (num6dofDetectedSources == 0)
+        {
+            Debug.Log($"[6DOF] Player '{gameObject.name}' (uid {spatID}): no source detected.");
+            return;
+        }
+
+        var sb = new System.Text.StringBuilder();
+        sb.Append($"[6DOF] Player '{gameObject.name}' (uid {spatID}): {num6dofDetectedSources} source(s) detected — ");
+        for (int i = 0; i < num6dofDetectedSources; i++)
+        {
+            sb.Append($"S{i}=({sixDofSourcePositionsFlat[i * 3 + 0]:F2}, " +
+                              $"{sixDofSourcePositionsFlat[i * 3 + 1]:F2}, " +
+                              $"{sixDofSourcePositionsFlat[i * 3 + 2]:F2})");
+            if (i < num6dofDetectedSources - 1) sb.Append(", ");
+        }
+        Debug.Log(sb.ToString());
+    }
+
+    /// <summary>
+    /// Public getter for another class (e.g. a Gizmo/visualization component)
+    /// to read the currently detected 6DOF source positions without
+    /// duplicating the native call. Allocates a small managed array —
+    /// intended for occasional Editor/Gizmo use, NOT per-frame audio-path code
+    /// (use sixDofSourcePositionsFlat + num6dofDetectedSources directly there).
+    /// </summary>
+    /// <returns>World-space positions of currently detected 6DOF sources (may be empty).</returns>
+    public Vector3[] Get6dofSourcePositions()
+    {
+        var result = new Vector3[num6dofDetectedSources];
+        for (int i = 0; i < num6dofDetectedSources; i++)
+        {
+            result[i] = new Vector3(
+                sixDofSourcePositionsFlat[i * 3 + 0],
+                sixDofSourcePositionsFlat[i * 3 + 1],
+                sixDofSourcePositionsFlat[i * 3 + 2]);
+        }
+        return result;
+    }
+
+    /// <summary>Number of currently detected 6DOF sources (0 if masking is disabled).</summary>
+    public int Get6dofSourceCount() => num6dofDetectedSources;
+    #endregion
+
     #region Spatialization
     /// <summary>
     /// Queries WFS parameters from the engine, updates speaker active/inactive state,
@@ -391,31 +577,54 @@ public class At_Player : MonoBehaviour
 #if UNITY_EDITOR
     private void OnDrawGizmos()
     {
-        if (!is3D) return;
-
-        float distance;
-        if (!isDynamicInstance)
+        if (is3D)
         {
-            At_PlayerState ps = At_AudioEngineUtils.getPlayerStateWithGuidAndName(
-                SceneManager.GetActiveScene().name, guid, gameObject.name);
-            distance = ps != null ? ps.minDistance : 0f;
-        }
-        else
-        {
-            distance = minDistance;
+            float distance;
+            if (!isDynamicInstance)
+            {
+                At_PlayerState ps = At_AudioEngineUtils.getPlayerStateWithGuidAndName(
+                    SceneManager.GetActiveScene().name, guid, gameObject.name);
+                distance = ps != null ? ps.minDistance : 0f;
+            }
+            else
+            {
+                distance = minDistance;
+            }
+
+            const int STEPS = 20;
+            float angle = 2f * Mathf.PI / STEPS;
+            Gizmos.color = Color.green;
+            for (int i = 0; i < STEPS; i++)
+            {
+                Vector3 p0 = transform.position + new Vector3(distance * Mathf.Cos(i * angle),       0f, distance * Mathf.Sin(i * angle));
+                Vector3 p1 = transform.position + new Vector3(distance * Mathf.Cos((i + 1) * angle), 0f, distance * Mathf.Sin((i + 1) * angle));
+                Gizmos.DrawLine(p0, p1);
+            }
         }
 
-        const int STEPS = 20;
-        float angle = 2f * Mathf.PI / STEPS;
-        Gizmos.color = Color.green;
-        for (int i = 0; i < STEPS; i++)
+        bool drewSomething = is3D;
+
+        // 6DOF detected sources — 2D + masking enabled only. Positions come
+        // from sixDofSourcePositionsFlat, refreshed every Update() via
+        // Refresh6dofSourcePositions() (so this is only meaningful in Play
+        // mode, while audio is actually streaming and being localized).
+        if (!is3D && is6dofMaskEnabled && num6dofDetectedSources > 0)
         {
-            Vector3 p0 = transform.position + new Vector3(distance * Mathf.Cos(i * angle),       0f, distance * Mathf.Sin(i * angle));
-            Vector3 p1 = transform.position + new Vector3(distance * Mathf.Cos((i + 1) * angle), 0f, distance * Mathf.Sin((i + 1) * angle));
-            Gizmos.DrawLine(p0, p1);
+            const float SPHERE_DIAMETER = 0.1f;
+            Gizmos.color = Color.magenta;
+            for (int i = 0; i < num6dofDetectedSources; i++)
+            {
+                Vector3 pos = new Vector3(
+                    sixDofSourcePositionsFlat[i * 3 + 0],
+                    sixDofSourcePositionsFlat[i * 3 + 1],
+                    sixDofSourcePositionsFlat[i * 3 + 2]);
+                Gizmos.DrawSphere(pos, SPHERE_DIAMETER * 0.5f);
+            }
+            drewSomething = true;
         }
 
-        SceneView.RepaintAll();
+        if (drewSomething)
+            SceneView.RepaintAll();
     }
 #endif
     #endregion
@@ -433,5 +642,11 @@ public class At_Player : MonoBehaviour
     [DllImport("at_wavespace_engine", CallingConvention = CallingConvention.StdCall)] private static extern int AT_WS_getPlayerSpeakerMask(int id, IntPtr speakerMask, int arraySize);
     [DllImport("at_wavespace_engine", CallingConvention = CallingConvention.StdCall)] private static extern int AT_WS_getPlayerMeters(int uid, IntPtr meter, int arraySize);
     [DllImport("at_wavespace_engine", CallingConvention = CallingConvention.StdCall)] private static extern int AT_WS_getAudioFileMetadata(string filepath, out int numChannels, out double sampleRate, out double lengthSeconds, out long totalSamples);
+    [DllImport("at_wavespace_engine", CallingConvention = CallingConvention.StdCall)] private static extern int AT_WS_setPlayer6dofMaskEnabled(int uid, bool isEnabled);
+    [DllImport("at_wavespace_engine", CallingConvention = CallingConvention.StdCall)] private static extern int AT_WS_setPlayer6dofGridRes(int uid, float gridRes);
+    [DllImport("at_wavespace_engine", CallingConvention = CallingConvention.StdCall)] private static extern int AT_WS_setPlayer6dofMinBlockCount(int uid, int minBlockCount);
+    [DllImport("at_wavespace_engine", CallingConvention = CallingConvention.StdCall)] private static extern int AT_WS_setPlayer6dofNumBufferedBlocks(int uid, int numBufferedBlocks);
+    [DllImport("at_wavespace_engine", CallingConvention = CallingConvention.StdCall)] private static extern int AT_WS_getPlayer6dofSourceCount(int uid, out int outCount);
+    [DllImport("at_wavespace_engine", CallingConvention = CallingConvention.StdCall)] private static extern int AT_WS_getPlayer6dofSourcePositions(int uid, IntPtr positions, int arraySize);
     #endregion
 }

@@ -36,9 +36,10 @@ set(AT_ENGINE_SOURCES
     Source/AT_SpatializationEngine.cpp
     Source/AT_SpatPlayer.cpp
     Source/AT_Spatializer.cpp
+    Source/AT_SixDofMaskProcessor.cpp
     Source/AT_BinauralSimpleSpatializer.cpp
     Source/HRTFProcessor.cpp
-    Source/HRTFTable.cpp
+    Source/HRTFTable.cpp    
     Source/SOFAReader.cpp
     Source/UnityLogger.cpp
 )
@@ -226,17 +227,34 @@ if(APPLE)
 
     add_custom_command(TARGET at_wavespace_engine POST_BUILD
         COMMAND mkdir -p "${UNITY_OUTPUT}"
+        # Copy under a temp name first — Unity's AssetDatabase file watcher
+        # polls Assets/ continuously. If we cp+codesign directly onto the
+        # final filename, there is a window (between cp finishing and codesign
+        # finishing) where Unity can pick up an unsigned dylib and crash with
+        # "Trying to load an unsigned library" — a race condition, not a
+        # missing-signature bug (the dylib IS signed moments later).
+        #
+        # Fix: copy to a .tmp name (outside Unity's expected plugin filename,
+        # so AssetDatabase ignores it), sign the .tmp file, then atomically
+        # rename (mv on the same volume = atomic on APFS/HFS+) onto the final
+        # name. Unity only ever sees either the OLD fully-signed dylib or the
+        # NEW fully-signed dylib — never an intermediate unsigned state.
         COMMAND cp -v
                 "$<TARGET_FILE:at_wavespace_engine>"
-                "${UNITY_OUTPUT}/"
+                "${UNITY_OUTPUT}/$<TARGET_FILE_NAME:at_wavespace_engine>.tmp"
         COMMAND codesign --force --sign -
+                "${UNITY_OUTPUT}/$<TARGET_FILE_NAME:at_wavespace_engine>.tmp"
+        COMMAND codesign --verify --strict
+                "${UNITY_OUTPUT}/$<TARGET_FILE_NAME:at_wavespace_engine>.tmp"
+        COMMAND mv -f
+                "${UNITY_OUTPUT}/$<TARGET_FILE_NAME:at_wavespace_engine>.tmp"
                 "${UNITY_OUTPUT}/$<TARGET_FILE_NAME:at_wavespace_engine>"
         COMMAND nm -g "${UNITY_OUTPUT}/$<TARGET_FILE_NAME:at_wavespace_engine>"
                 | head -20
         COMMAND lipo -info
                 "${UNITY_OUTPUT}/$<TARGET_FILE_NAME:at_wavespace_engine>"
-        COMMAND echo "Copie, signature et verification terminees"
-        COMMENT "→ Copie dylib vers Unity MacOSX plugins"
+        COMMAND echo "Copie, signature (atomique) et verification terminees"
+        COMMENT "→ Copie dylib vers Unity MacOSX plugins (atomic sign-then-rename)"
         VERBATIM
     )
 

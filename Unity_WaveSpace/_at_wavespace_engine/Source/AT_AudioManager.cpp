@@ -545,10 +545,27 @@ namespace AT
             waitForDeviceScan(10000);
         }
 
-        // Ensure Unity's main thread is the JUCE message thread.
-        // AudioDeviceManager::initialise() (called by SpatializationEngine::setup)
-        // registers MIDI listeners that require JUCE_ASSERT_MESSAGE_THREAD.
+        // Ensure Unity's main thread is the JUCE message thread — required both
+        // because AudioDeviceManager::initialise() registers MIDI listeners
+        // that need JUCE_ASSERT_MESSAGE_THREAD, AND (see below) because the
+        // device rescan we're about to force must run on this same thread.
+        // Must happen BEFORE the rescan below: CoreAudio (and audio device
+        // enumeration generally) is not reliably thread-safe for scanning from
+        // a background thread. scanDevicesAsync() (used for the Editor device
+        // list / cache) runs on a background std::thread; the fresh scan that
+        // m_deviceManager.initialise() performs internally, just below, runs on
+        // whichever thread calls it. If that background-thread scan leaves
+        // CoreAudio's internal HAL state in a way the next scan doesn't see
+        // consistently, the device name match can silently fail and JUCE falls
+        // back to the default device — no error, just the wrong device open.
+        // Manually reselecting a device in the Editor works around this because
+        // refreshDevices() runs scanAndCacheDevices() synchronously on the
+        // calling (main) thread instead. Forcing that same synchronous,
+        // main-thread rescan here — right before initialise(), on the same
+        // thread initialise() itself will use — reproduces that same "healthy"
+        // state on every setup() call, not just after a manual reselect.
         juce::MessageManager::getInstance()->setCurrentThreadAsMessageThread();
+        refreshDevices();
 
         // Store the binaural flag and virtual speaker count before configuring the engine
         m_isBinauralVirtualization = isBinauralVirtualization;

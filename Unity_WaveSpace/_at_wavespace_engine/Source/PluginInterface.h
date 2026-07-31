@@ -386,6 +386,78 @@ EXPORT_API int CALL_CONV AT_WS_getPlayerNumChannel(int uid, int* numChannel);
  */
 EXPORT_API int CALL_CONV AT_WS_getPlayerSpeakerMask(int uid, float* speakerMask, int arraySize);
 
+// ============================================================================
+// 6DOF SOURCE MASKING (2D players only)
+//
+// Listener-position-dependent per-channel gain for 2D players whose N
+// channels match the current virtual speaker rig (e.g. a ring/sphere
+// capture) — enables free 6DOF listener navigation inside the captured
+// scene without moving the actual source content. See AT_SixDofMaskProcessor
+// and the 6dof-nav skill for the full algorithm and validation history.
+// ============================================================================
+
+/**
+ * @brief Enables or disables 6DOF source masking for a given 2D player.
+ *
+ * NOT real-time safe (allocates on first enable) — do not call from the
+ * audio thread. Has no audible effect while the player is in 3D mode.
+ *
+ * @param uid        Unique identifier of the player
+ * @param isEnabled  true to enable, false to disable (pass-through)
+ * @return AUDIO_PLUGIN_OK (0) if successful, AUDIO_PLUGIN_ERROR (1) if failed
+ */
+EXPORT_API int CALL_CONV AT_WS_setPlayer6dofMaskEnabled(int uid, bool isEnabled);
+
+/**
+ * @brief Sets the grid resolution (metres) used by the 6DOF mode-detection
+ *        histogram. Default 0.02 (validated on the clean synthetic corpus —
+ *        see 6dof-nav skill); real/reverberant recordings typically need a
+ *        coarser value (0.1-0.3).
+ * @param uid      Unique identifier of the player
+ * @param gridRes  Grid resolution in metres (> 0)
+ */
+EXPORT_API int CALL_CONV AT_WS_setPlayer6dofGridRes(int uid, float gridRes);
+
+/**
+ * @brief Sets the minimum number of matching estimates (within the rolling
+ *        localization history) required for a position to be accepted as a
+ *        real source. Default 4 (synthetic corpus).
+ * @param uid            Unique identifier of the player
+ * @param minBlockCount  Minimum match count (>= 1)
+ */
+EXPORT_API int CALL_CONV AT_WS_setPlayer6dofMinBlockCount(int uid, int minBlockCount);
+
+/**
+ * @brief Sets the number of audio callback blocks accumulated into one 6DOF
+ *        localization analysis window. 1 = lowest latency (try this first —
+ *        one block up to 4096 samples @ 48 kHz is ~85 ms). Increase if
+ *        GCC-PHAT proves unreliable on windows that short.
+ * @param uid               Unique identifier of the player
+ * @param numBufferedBlocks Number of blocks (1-16)
+ */
+EXPORT_API int CALL_CONV AT_WS_setPlayer6dofNumBufferedBlocks(int uid, int numBufferedBlocks);
+
+/**
+ * @brief Retrieves the number of sources currently detected by 6DOF masking
+ *        for a given player (0 if disabled, not yet detected, or in bypass
+ *        fallback after repeated detection failures).
+ * @param uid       Unique identifier of the player
+ * @param outCount  Receives the detected source count
+ */
+EXPORT_API int CALL_CONV AT_WS_getPlayer6dofSourceCount(int uid, int* outCount);
+
+/**
+ * @brief Retrieves the positions of currently detected 6DOF sources, for
+ *        display/debugging in Unity.
+ * @param uid         Unique identifier of the player
+ * @param positions   Flat [x0,y0,z0,x1,y1,z1,...] output buffer
+ * @param arraySize   Size of `positions` in floats (must be >= 3 * expected max sources)
+ * @return AUDIO_PLUGIN_OK (0) if successful, AUDIO_PLUGIN_ERROR (1) if failed.
+ *         The actual number of sources copied is arraySize/3 at most; query
+ *         AT_WS_getPlayer6dofSourceCount() first to size the buffer correctly.
+ */
+EXPORT_API int CALL_CONV AT_WS_getPlayer6dofSourcePositions(int uid, float* positions, int arraySize);
+
 /**
  * @brief Retrieves the mixer output meters
  * 
@@ -544,6 +616,16 @@ EXPORT_API int CALL_CONV AT_WS_loadHRTF(const char* filePath);
  *       Call AT_WS_setIsBinauralVirtualization(true) first.
  */
 EXPORT_API int CALL_CONV AT_WS_loadDefaultHRTF();
+
+/**
+ * @brief Selects the stereo-downmix rendering algorithm.
+ * @param mode 0 = amplitude panning (simple gain law, no HRTF/convolution/
+ *             delay lines), 1 = HRTF convolution. If 1 is requested but no
+ *             HRTF table is currently loaded, the engine silently falls back
+ *             to amplitude panning (no error) until a file is loaded.
+ * @return AUDIO_PLUGIN_OK (0) if successful, AUDIO_PLUGIN_ERROR (1) if failed
+ */
+EXPORT_API int CALL_CONV AT_WS_setBinauralRenderMode(int mode);
 
 /**
  * @brief Set simple binaural spatialization mode for A/B comparison
