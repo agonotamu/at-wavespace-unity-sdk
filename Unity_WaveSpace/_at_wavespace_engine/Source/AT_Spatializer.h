@@ -117,6 +117,16 @@ namespace AT
         void setIsWfsGain(bool isWfsGain);
 
         /**
+         * @brief Switches udpateWfsGainAndDelay() between the true WFS driving
+         *        function and the free-field capture-simulation model (see
+         *        m_useCaptureSimulationModel). Intended to be toggled only by
+         *        SpatializationEngine around a "simulated capture" recording,
+         *        not for normal interactive use.
+         */
+        void setUseCaptureSimulationModel(bool useCaptureSimulation);
+        bool getUseCaptureSimulationModel() const { return m_useCaptureSimulationModel.load(std::memory_order_relaxed); }
+
+        /**
          * @brief When enabled, the time-reversal min/max reference is computed only
          * over active speakers (mask > 0.5). Prevents L/R inversion on focused sources
          * when the speaker mask is active. When disabled, all speakers are included
@@ -299,6 +309,24 @@ namespace AT
          */
         void udpateWfsGainAndDelay();
 
+        /**
+         * @brief Free-field capture-simulation driving values: 1/r amplitude,
+         *        pure propagation delay (r/c) — matches the physical model
+         *        of simulate_capture.py exactly (no directivity weighting, no
+         *        speaker masking, no focused-source time-reversal blend).
+         *        Called by udpateWfsGainAndDelay() instead of the true WFS
+         *        calculation when m_useCaptureSimulationModel is set; the
+         *        true WFS code path is otherwise untouched by this feature.
+         *
+         *        LIMITATION: like the rest of the WFS engine, this uses the
+         *        source's X/Z position only (2D) — a source's Y (height) is
+         *        not tracked by Spatializer, so this differs from
+         *        simulate_capture.py's full 3D distance whenever a source
+         *        has Y != 0. Not a bug introduced by this feature; just not
+         *        fixed by it either.
+         */
+        void updateCaptureSimulationGainAndDelay();
+
         
         // ============================================================================
         // PRIVATE VARIABLES
@@ -447,6 +475,18 @@ namespace AT
          *  If false, all speaker gains are set to 1.0 (delay-only mode).
          *  Written from the main thread, read from the audio thread → atomic. */
         std::atomic<bool> m_isWfsGain { false };
+
+        /**
+         * If true, udpateWfsGainAndDelay() computes free-field capture-
+         * simulation gains/delays (1/r amplitude, pure propagation delay —
+         * matching simulate_capture.py's physical model) instead of the
+         * true WFS focused-source driving function — see
+         * updateCaptureSimulationGainAndDelay(). Set only while a
+         * "simulated capture" recording is active (see
+         * SpatializationEngine::startRecording); off otherwise, so normal
+         * WFS playback is entirely unaffected.
+         */
+        std::atomic<bool> m_useCaptureSimulationModel { false };
 
         /** When true, min/max delay reference for time reversal is computed only
          *  over speakers with mask > 0.5. Prevents L/R inversion on focused sources. */

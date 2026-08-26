@@ -466,7 +466,7 @@ public class At_PlayerEditor : Editor
         string maxSrcStr = EditorGUILayout.TextField(playerState.sixDofMaxSources.ToString(), GUILayout.Width(60));
         if (int.TryParse(maxSrcStr, out int pms))
         {
-            pms = Mathf.Clamp(pms, 1, 6);
+            pms = Mathf.Clamp(pms, 1, 15);
             if (pms != playerState.sixDofMaxSources) { playerState.sixDofMaxSources = pms; shouldSave = true; }
         }
         EditorGUILayout.EndHorizontal();

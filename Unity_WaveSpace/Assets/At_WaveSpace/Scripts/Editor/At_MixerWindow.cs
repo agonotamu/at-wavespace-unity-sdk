@@ -162,6 +162,31 @@ public class At_MixerWindow : EditorWindow
         EditorGUILayout.BeginHorizontal(EditorStyles.toolbar);
         if (GUILayout.Button("↻", EditorStyles.toolbarButton, GUILayout.Width(20)))
             RefreshAudioSources();
+
+        using (new EditorGUI.DisabledScope(!EditorApplication.isPlaying || players.Count == 0))
+        {
+            // "Any playing" (not "all playing"): with a mix of running and
+            // stopped players, the useful action is "stop everything", same
+            // convention as a DAW's global stop. Drives each At_Player through
+            // its own StartPlaying()/StopPlaying() — same call the individual
+            // per-player button already uses — so isPlaying and the meters
+            // stay in sync. Never call the native AT_WS_start/stopAllPlayers()
+            // directly from here: it bypasses At_Player's own state entirely
+            // (confirmed bug: meters and the individual play buttons never
+            // reflected a native-only start).
+            bool anyPlaying = players.Exists(p => p != null && p.isPlaying);
+            string label = anyPlaying ? "■ Stop All" : "▶ Play All";
+            if (GUILayout.Button(label, EditorStyles.toolbarButton, GUILayout.Width(70)))
+            {
+                foreach (At_Player player in players)
+                {
+                    if (player == null) continue;
+                    if (anyPlaying) player.StopPlaying();
+                    else            player.StartPlaying();
+                }
+            }
+        }
+
         GUILayout.FlexibleSpace();
         GUILayout.Label($"{players.Count}P", EditorStyles.miniLabel);
         EditorGUILayout.EndHorizontal();

@@ -122,7 +122,7 @@ public class At_Player : MonoBehaviour
     /// Maximum number of simultaneously detected 6DOF sources. Must match
     /// AT::SixDofMaskProcessor::MAX_SOURCES in the C++ library.
     /// </summary>
-    public const int MAX_6DOF_SOURCES = 6;
+    public const int MAX_6DOF_SOURCES = 20;
 
     /// <summary>
     /// Number of 6DOF sources currently detected by the native processor

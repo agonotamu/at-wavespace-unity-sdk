@@ -338,6 +338,15 @@ namespace AT
 
     void Spatializer::udpateWfsGainAndDelay()
     {
+        // Recording-only diversion: compute the free-field capture-simulation
+        // model instead of the true WFS driving function, then return —
+        // everything below is the ordinary WFS path, untouched.
+        if (m_useCaptureSimulationModel.load(std::memory_order_relaxed))
+        {
+            updateCaptureSimulationGainAndDelay();
+            return;
+        }
+
         // Retrieve smoothed listener position from the SpatializationEngine
         float listenerPosX = 0.0f, listenerPosY = 0.0f, listenerPosZ = 0.0f;
         if (m_pSpatializationEngine != nullptr)
@@ -530,6 +539,45 @@ namespace AT
        m_outputArraysDirty.store(true, std::memory_order_release);
     }
 
+    void Spatializer::updateCaptureSimulationGainAndDelay()
+    {
+        // Free-field model: gain = 1/max(r, MIN_DIST), delay = r/c — direct
+        // match of mic_positions()/simulate()'s physics in simulate_capture.py.
+        // No listener dependency (a real mic array doesn't care where the
+        // listener is), no directivity weighting, no speaker masking, no
+        // focused-source time-reversal blend — this path exists purely to
+        // generate GCC-PHAT/MUSIC training/evaluation corpus, not for
+        // audible playback.
+        constexpr float MIN_DIST = 0.05f; // matches simulate_capture.py
+
+        for (int i = 0; i < m_numOutputChannels; i++)
+        {
+            float speakerPosX = 0.0f, speakerPosY = 0.0f, speakerPosZ = 0.0f;
+            if (m_pSpatializationEngine != nullptr)
+                m_pSpatializationEngine->getSmoothedVirtualSpeakerPosition(i, speakerPosX, speakerPosY, speakerPosZ);
+            else
+            {
+                speakerPosX = m_virtualSpeakerPositions[i][0];
+                speakerPosY = m_virtualSpeakerPositions[i][1];
+                speakerPosZ = m_virtualSpeakerPositions[i][2];
+            }
+
+            // X/Z only — see this function's header doc comment on the Y limitation.
+            const float dx   = m_sourcePosX - speakerPosX;
+            const float dz   = m_sourcePosZ - speakerPosZ;
+            const float dist = std::max(std::sqrt(dx * dx + dz * dz), MIN_DIST);
+
+            m_wfsDelays[i] = dist / 340.0f;
+            const float gain = 1.0f / dist;
+            m_wfsGainSmoothers[i].setTargetValue(gain);
+            m_wfsLinGains[i] = gain;
+        }
+
+        std::memcpy(m_committedWfsDelays,   m_wfsDelays,   m_numOutputChannels * sizeof(float));
+        std::memcpy(m_committedWfsLinGains, m_wfsLinGains, m_numOutputChannels * sizeof(float));
+        m_outputArraysDirty.store(true, std::memory_order_release);
+    }
+
     void Spatializer::updateSourceParametersTarget()
     {
         // First real call: snap instantly instead of ramping. See
@@ -717,6 +765,11 @@ namespace AT
             for (int i = 0; i < MAX_VIRTUAL_SPEAKERS; ++i)
                 m_wfsGainSmoothers[i].setTargetValue(1.0f);
         }
+    }
+
+    void Spatializer::setUseCaptureSimulationModel(bool useCaptureSimulation)
+    {
+        m_useCaptureSimulationModel.store(useCaptureSimulation, std::memory_order_relaxed);
     }
 
     // ============================================================================

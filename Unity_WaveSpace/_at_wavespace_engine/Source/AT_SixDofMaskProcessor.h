@@ -247,7 +247,7 @@ namespace AT
         /// See "Detection failure protection" in the .cpp — MAX_STALE_CYCLES.
         bool isInBypassFallback() const { return m_state.load(std::memory_order_relaxed) == State::Bypass; }
 
-        static constexpr int MAX_SOURCES = 6;
+        static constexpr int MAX_SOURCES = 20;
 
     private:
         // --------------------------------------------------------------
@@ -416,7 +416,15 @@ namespace AT
         // this, adapting the Python prototype's "per-block estimates list"
         // to streaming.
         // --------------------------------------------------------------
-        static constexpr int HISTORY_SIZE = 32;
+        
+        // HISTORY_SIZE must grow with MAX_SOURCES: unlike GCC-PHAT (one estimate per
+        // window), MUSIC pushes up to MAX_SOURCES peaks per window — a fixed
+        // HISTORY_SIZE therefore caps the number of CYCLES actually retained to
+        // HISTORY_SIZE/MAX_SOURCES, which becomes too low as MAX_SOURCES grows,
+        // making min_block_count unreachable for any source. This multiplier (x32)
+        // restores the original history depth (32 cycles) regardless of MAX_SOURCES.
+        static constexpr int HISTORY_SIZE = MAX_SOURCES * 32;
+        
         std::vector<SixDofSourcePosition> m_estimateHistory;
         int m_historyWritePos = 0;
         int m_historyCount    = 0;

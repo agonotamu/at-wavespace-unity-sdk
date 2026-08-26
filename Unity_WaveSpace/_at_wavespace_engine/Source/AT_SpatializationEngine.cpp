@@ -29,6 +29,8 @@ namespace AT
         m_isBinauralVirtualization = false;
         m_isSimpleBinauralSpat     = false;
 
+        m_recordingThread.startThread(juce::Thread::Priority::low);
+
         // Zero-fill static arrays to avoid undefined values before prepareToPlay()
         std::memset(m_metersArray,                 0, sizeof(m_metersArray));
         std::memset(m_virtualSpeakerPositionsFlat, 0, sizeof(m_virtualSpeakerPositionsFlat));
@@ -40,6 +42,9 @@ namespace AT
 
     SpatializationEngine::~SpatializationEngine()
     {
+        stopRecording();
+        m_recordingThread.stopThread(2000);
+
         if (m_puPlayer)
         {
             m_deviceManager.removeAudioCallback(m_puPlayer.get());
@@ -497,6 +502,12 @@ namespace AT
         
         
         
+        // Sized to the largest channel count either recording tap could ever
+        // need (RawMultichannel/SimulatedCapture: m_numVirtualSpeakers;
+        // Downmix: 2) — reused, never reallocated on the audio thread, see
+        // writeRecordingBlock().
+        m_recordingScratchBuffer.setSize(std::max(m_numVirtualSpeakers, 2), samplesPerBlock);
+
         const int safeOutCh = std::min(m_numOutputChannels, MAX_VIRTUAL_SPEAKERS);
         for (int i = 0; i < safeOutCh; i++)
             m_metersArray[i] = -90.0f;
@@ -1120,6 +1131,18 @@ namespace AT
             LOG("Audio thread: geometry state reset (setup) — awaiting first transforms");
         }
 
+        // Consume a pending recording-warmup request (posted by startRecording()
+        // when source == Downmix) — see m_recordingWarmupRequested's doc comment.
+        // Same release-through-warmup-then-fade-in sequence as the mode-switch
+        // case below (Step 5), just triggered from a different origin.
+        if (m_recordingWarmupRequested.exchange(false, std::memory_order_acq_rel))
+        {
+            m_transitionGain.setCurrentAndTargetValue(0.0f);
+            m_warmupBlocksRemaining = WARMUP_BLOCKS;
+            LOG("Audio thread: recording warmup requested — muting "
+                << WARMUP_BLOCKS << " block(s) before fade-in");
+        }
+
         if (m_listenerTransformDirty.load(std::memory_order_acquire))
         {
             float pos[3], rot[3], fwd[3];
@@ -1431,6 +1454,24 @@ namespace AT
         {
             processPlayersWFS(bufferToFill);
 
+            // Recording tap — raw multichannel WFS bus (RawMultichannel /
+            // SimulatedCapture only; the Downmix tap is further down, after
+            // master gain — see the RecordingSource doc comment in the header
+            // for why these two taps sit at different points).
+            if (m_isRecording.load(std::memory_order_acquire)
+                && (m_recordingSource == RecordingSource::RawMultichannel
+                    || m_recordingSource == RecordingSource::SimulatedCapture))
+            {
+                const juce::AudioBuffer<float>& wfsBus =
+                    m_isBinauralVirtualization ? m_wfsBuffer : *bufferToFill.buffer;
+                const int wfsStartSample = m_isBinauralVirtualization ? 0 : bufferToFill.startSample;
+                // Cancel processPlayersWFS()'s 1/sqrt(numVirtualSpeakers) safety
+                // normalisation — see writeRecordingBlock()'s doc comment (header).
+                const float gainCompensation = (m_numVirtualSpeakers > 1)
+                                              ? std::sqrt((float) m_numVirtualSpeakers) : 1.0f;
+                writeRecordingBlock(wfsBus, wfsStartSample, bufferToFill.numSamples, gainCompensation);
+            }
+
             if (m_isBinauralVirtualization && !m_puHrtfProcessors.empty())
                 processBinauralVirtualization(bufferToFill);
         }
@@ -1542,6 +1583,16 @@ namespace AT
                 m_metersArray[channel] = (rmsValue > 0.0f) ? 20.0f * log10f(rmsValue) : -90.0f;
             }
 
+        }
+
+        // Recording tap — final 2-channel downmix (Downmix source only).
+        // Placed after master gain, matching exactly what would reach the
+        // physical device — see the RecordingSource doc comment in the header.
+        if (m_isRecording.load(std::memory_order_acquire)
+            && m_recordingSource == RecordingSource::Downmix
+            && bufferToFill.buffer != nullptr)
+        {
+            writeRecordingBlock(*bufferToFill.buffer, bufferToFill.startSample, bufferToFill.numSamples);
         }
     }
 
@@ -2338,6 +2389,169 @@ namespace AT
         m_nearFieldCorrection.setParameters(rVirtual, m_nfcRRef, azimuthDeg, m_nfcHeadRadius);
         LOG("NF correction geometry: r=" << rVirtual << "m  az=" << azimuthDeg
             << "deg  r_ref=" << m_nfcRRef << "m");
+    }
+
+    // ============================================================================
+    // RECORDING
+    // ============================================================================
+
+    bool SpatializationEngine::startRecording(const juce::File& destFile, RecordingSource source,
+                                                RecordingFormat format, int bitDepthOrQuality)
+    {
+        stopRecording();
+
+        if (source == RecordingSource::Downmix && !m_isBinauralVirtualization)
+        {
+            LOG_ERROR("startRecording(): Downmix requested but binaural virtualization "
+                      "is disabled — there is no separate 2-channel bus to tap. "
+                      "Use RawMultichannel or SimulatedCapture instead.");
+            return false;
+        }
+
+        const int numChannels = (source == RecordingSource::Downmix)
+                               ? 2
+                               : (m_isBinauralVirtualization ? m_numVirtualSpeakers : m_numOutputChannels);
+        if (numChannels <= 0)
+        {
+            LOG_ERROR("startRecording(): channel count resolved to 0 — engine not set up yet?");
+            return false;
+        }
+
+        auto fileStreamOwned = destFile.createOutputStream();
+        if (!fileStreamOwned)
+        {
+            LOG_ERROR("startRecording(): impossible de creer le flux : " << destFile.getFullPathName());
+            return false;
+        }
+
+        juce::AudioFormatWriter* writer = nullptr;
+        if (format == RecordingFormat::Wav)
+        {
+            int bitDepth = bitDepthOrQuality;
+            if (bitDepth != 16 && bitDepth != 24 && bitDepth != 32)
+                bitDepth = 24;
+            writer = m_recWavFormat.createWriterFor(fileStreamOwned.get(), m_sampleRate,
+                                                     (unsigned int) numChannels, bitDepth, {}, 0);
+        }
+        else // RecordingFormat::Vorbis
+        {
+           #if JUCE_USE_OGGVORBIS
+            const int qualityIndex = juce::jlimit(0, 10, bitDepthOrQuality);
+            writer = m_recOggFormat.createWriterFor(fileStreamOwned.get(), m_sampleRate,
+                                                      (unsigned int) numChannels, 0, {}, qualityIndex);
+           #else
+            LOG_ERROR("startRecording(): Ogg Vorbis requested but JUCE_USE_OGGVORBIS is not "
+                      "enabled in this build.");
+            return false;
+           #endif
+        }
+
+        if (!writer)
+        {
+            LOG_ERROR("startRecording(): createWriterFor() a echoue (format/channels/sampleRate "
+                      "combination rejected)");
+            return false;
+        }
+        fileStreamOwned.release(); // ownership transferred to writer
+
+        // If a SimulatedCapture recording is starting, switch every currently
+        // active player's WFS driving-function computation to the free-field
+        // model for the duration of the recording — restored in stopRecording().
+        if (source == RecordingSource::SimulatedCapture)
+            setUseCaptureSimulationModelOnAllPlayers(true);
+
+        // Downmix only: request the existing warmup+fade-in sequence so the
+        // recording never starts on a raw HRTF convolution crossfade transient
+        // (e.g. an HRTF was just loaded, or binaural virtualization was just
+        // enabled, moments before this call) — see m_recordingWarmupRequested's
+        // doc comment. RawMultichannel/SimulatedCapture tap before the HRTF
+        // stage entirely, so this does not apply to them.
+        if (source == RecordingSource::Downmix)
+            m_recordingWarmupRequested.store(true, std::memory_order_release);
+
+        m_recordingSource = source;
+        {
+            const juce::ScopedLock sl(m_recordingLock);
+            m_pRecordingWriter = std::make_unique<juce::AudioFormatWriter::ThreadedWriter>(
+                writer, m_recordingThread, 32768);
+        }
+        m_recordingSamplesWritten.store(0, std::memory_order_relaxed);
+        m_isRecording.store(true, std::memory_order_release);
+
+        LOG("Recording -> " << destFile.getFileName()
+            << "  source=" << (int) source << "  channels=" << numChannels
+            << "  format=" << (format == RecordingFormat::Wav ? "WAV" : "Vorbis"));
+        return true;
+    }
+
+    void SpatializationEngine::stopRecording()
+    {
+        if (!m_isRecording.load(std::memory_order_relaxed))
+            return;
+
+        m_isRecording.store(false, std::memory_order_release);
+        {
+            const juce::ScopedLock sl(m_recordingLock);
+            m_pRecordingWriter.reset(); // flushes and closes the file
+        }
+
+        if (m_recordingSource == RecordingSource::SimulatedCapture)
+            setUseCaptureSimulationModelOnAllPlayers(false);
+
+        LOG("Recording stopped. Samples written: " << m_recordingSamplesWritten.load());
+    }
+
+    void SpatializationEngine::writeRecordingBlock(const juce::AudioBuffer<float>& buffer,
+                                                     int startSample, int numSamples, float gainMultiplier)
+    {
+        // Same lock as start/stop (m_recordingLock), but non-blocking here:
+        // if a stop is concurrently in progress and holds the lock, this
+        // block is simply skipped — the ThreadedWriter FIFO absorbs the
+        // occasional missing buffer, and the audio thread must never wait.
+        const juce::CriticalSection::ScopedTryLockType sl(m_recordingLock);
+        if (!sl.isLocked() || !m_pRecordingWriter)
+            return;
+
+        const int numChannels = buffer.getNumChannels();
+        if (numChannels <= 0 || numChannels > 512)
+            return; // sanity guard — matches AT_WS_setup's own channel cap
+
+        const float* chPtrs[512];
+
+        if (gainMultiplier == 1.0f)
+        {
+            for (int ch = 0; ch < numChannels; ++ch)
+                chPtrs[ch] = buffer.getReadPointer(ch, startSample);
+        }
+        else
+        {
+            // Scale into the pre-sized scratch buffer (see setup()) — never
+            // allocates here, safe on the audio thread.
+            if (numChannels > m_recordingScratchBuffer.getNumChannels()
+                || numSamples > m_recordingScratchBuffer.getNumSamples())
+                return; // scratch buffer sized for the current config; a mismatch here means setup() changed underneath us — drop this block rather than risk an out-of-bounds write
+
+            for (int ch = 0; ch < numChannels; ++ch)
+            {
+                m_recordingScratchBuffer.copyFrom(ch, 0, buffer, ch, startSample, numSamples);
+                m_recordingScratchBuffer.applyGain(ch, 0, numSamples, gainMultiplier);
+                chPtrs[ch] = m_recordingScratchBuffer.getReadPointer(ch);
+            }
+        }
+
+        m_pRecordingWriter->write(chPtrs, numSamples);
+        m_recordingSamplesWritten.fetch_add(numSamples, std::memory_order_relaxed);
+    }
+
+    void SpatializationEngine::setUseCaptureSimulationModelOnAllPlayers(bool useCaptureSimulation)
+    {
+        // 2D players have no Spatializer (getSpatializer() == nullptr) — the
+        // capture-simulation model only ever applies to 3D/WFS sources, same
+        // rationale as setIsWfsGain() just above, whose pattern this mirrors.
+        const juce::SpinLock::ScopedLockType lock(m_playerListLock);
+        for (auto& spatPlayer : m_spatPlayers)
+            if (spatPlayer && spatPlayer->getSpatializer() != nullptr)
+                spatPlayer->getSpatializer()->setUseCaptureSimulationModel(useCaptureSimulation);
     }
 
 }  // namespace AT

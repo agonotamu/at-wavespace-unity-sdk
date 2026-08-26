@@ -239,6 +239,67 @@ namespace AT
         void setBinauralRenderMode(int mode) { m_binauralRenderMode.store(mode, std::memory_order_relaxed); }
         int  getBinauralRenderMode() const { return m_binauralRenderMode.load(std::memory_order_relaxed); }
 
+        // ============================================================================
+        // RECORDING — real-time tap of the engine's own output bus to a file.
+        //
+        // Three sources (see RecordingSource): the final downmix (2 channels,
+        // only meaningful when binaural virtualization is enabled — HRTF or
+        // amplitude panning, see binauralRenderMode); the raw multichannel WFS
+        // bus (m_numVirtualSpeakers channels, independent of the physical
+        // device's own channel count); or the same raw bus with every active
+        // player's WFS gain/delay temporarily switched to the free-field
+        // capture-simulation model (matches simulate_capture.py — see
+        // Spatializer::setUseCaptureSimulationModel()).
+        //
+        // The RawMultichannel/SimulatedCapture tap is placed BEFORE master gain
+        // (right after all players are mixed, before any downmix) — deliberately,
+        // so a corpus recording's absolute level never depends on whatever master
+        // gain happens to be dialed in for monitoring. The Downmix tap is placed
+        // AFTER master gain, matching what actually reaches the device.
+        //
+        // Real-time only: writes go through a background juce::TimeSliceThread
+        // via ThreadedWriter (same pattern as the rest of this engine's
+        // background work) — no offline/faster-than-real-time rendering.
+        // ============================================================================
+
+        enum class RecordingSource
+        {
+            Downmix = 0,          ///< Final 2-channel bus (HRTF or amplitude-panning downmix). Requires binaural virtualization to be enabled.
+            RawMultichannel = 1,  ///< Raw WFS multichannel bus, pre-downmix, pre-master-gain.
+            SimulatedCapture = 2  ///< Same bus as RawMultichannel, with the free-field capture-simulation driving model active.
+        };
+
+        enum class RecordingFormat
+        {
+            Wav = 0,
+            Vorbis = 1
+        };
+
+        /**
+         * @brief Starts real-time recording of the engine's own output to a file.
+         *
+         * NOT real-time safe (allocates a file writer) — call from the main/Unity
+         * thread only, never the audio thread.
+         *
+         * @param destFile          Target file (extension not enforced — pick one matching `format`).
+         * @param source            Which internal bus to tap.
+         * @param format            WAV (PCM) or Ogg Vorbis.
+         * @param bitDepthOrQuality For Wav: bit depth (16/24/32). For Vorbis: quality index (0-10).
+         * @return true if recording started successfully (false e.g. if Downmix
+         *         was requested while binaural virtualization is disabled, or the
+         *         file could not be created).
+         */
+        bool startRecording(const juce::File& destFile, RecordingSource source,
+                             RecordingFormat format, int bitDepthOrQuality);
+
+        /// Stops the current recording, if any. Safe to call even if not recording.
+        void stopRecording();
+
+        bool isRecording() const { return m_isRecording.load(std::memory_order_relaxed); }
+
+        /// Number of samples (per channel) written so far in the current/last recording.
+        juce::int64 getRecordingSamplesWritten() const { return m_recordingSamplesWritten.load(std::memory_order_relaxed); }
+
         /**
          * @brief Loads HRTF data from a text file into all HRTF processors
          */
@@ -607,6 +668,17 @@ namespace AT
         int  m_startupGateBlocksWaited = 0;
         std::atomic<bool> m_resetGeometryStateRequested{false};
 
+        /// Cross-thread request, same pattern as m_resetGeometryStateRequested
+        /// just above: startRecording() (main thread) sets this when starting a
+        /// Downmix recording, so the audio thread — which alone may touch
+        /// m_warmupBlocksRemaining/m_transitionGain (see Step 5) — releases
+        /// through the SAME warmup+fade-in machinery already used for mode
+        /// switches, instead of the recording tap possibly catching a raw HRTF
+        /// convolution crossfade transient (loadHRTFFile()/loadDefaultHRTF()/
+        /// setIsBinauralVirtualization() do not themselves trigger a warmup).
+        /// Consumed at the top of Step 0, right next to the geometry-reset check.
+        std::atomic<bool> m_recordingWarmupRequested{false};
+
         /// ~250 ms at 512 samples / 48 kHz before giving up on external
         /// transforms and proceeding with the placeholder geometry.
         static constexpr int STARTUP_GATE_TIMEOUT_BLOCKS = 24;
@@ -625,6 +697,53 @@ namespace AT
         /// N-channel WFS output buffer (only used in binaural mode).
         /// setSize() is called once in prepareToPlay() — no per-block allocation.
         juce::AudioBuffer<float> m_wfsBuffer;
+
+        // ============================================================================
+        // RECORDING — see the public API block above for the concept. Deliberately
+        // self-contained (own thread, own format objects, own lock) so it doesn't
+        // entangle with the rest of getNextAudioBlock() beyond the two small tap
+        // blocks that read from it (see writeRecordingBlock()).
+        // ============================================================================
+        //
+        // gainMultiplier compensates for processPlayersWFS()'s own
+        // 1/sqrt(numVirtualSpeakers) safety normalisation (an anti-clipping
+        // measure for the binaural/downmix summing path, applied
+        // unconditionally to wfsTargetInfo before this tap ever sees it) —
+        // RawMultichannel/SimulatedCapture recordings pass
+        // sqrt(m_numVirtualSpeakers) here to cancel it back out, so the
+        // recorded signal matches the actual per-channel WFS driving level
+        // (and simulate_capture.py's un-normalised physics) instead of
+        // being ~1/sqrt(N) quieter than it should be for no physical
+        // reason. Downmix passes 1.0f (no change) — that normalisation is
+        // an intended part of producing a sane binaural mix, not an
+        // artifact to undo. Uses m_recordingScratchBuffer (sized once in
+        // prepare(), see setup()) rather than allocating on the audio
+        // thread whenever gainMultiplier != 1.0f.
+        void writeRecordingBlock(const juce::AudioBuffer<float>& buffer, int startSample,
+                                  int numSamples, float gainMultiplier = 1.0f);
+        void setUseCaptureSimulationModelOnAllPlayers(bool useCaptureSimulation);
+
+        juce::AudioBuffer<float> m_recordingScratchBuffer; ///< sized once in setup(), see writeRecordingBlock()
+        juce::TimeSliceThread m_recordingThread { "AT_Recording" };
+        juce::WavAudioFormat  m_recWavFormat;
+       #if JUCE_USE_OGGVORBIS
+        juce::OggVorbisAudioFormat m_recOggFormat;
+       #endif
+        // Single lock protecting m_pRecordingWriter: start/stop (main thread,
+        // not real-time) take it blocking (ScopedLock); the audio-thread write
+        // takes it non-blocking (ScopedTryLock) and simply skips the block if
+        // a stop is concurrently in progress — the ThreadedWriter FIFO absorbs
+        // the occasional missing buffer. Same single-lock pattern as the
+        // AES-corpus recording code this replaces.
+        juce::CriticalSection m_recordingLock;
+        std::unique_ptr<juce::AudioFormatWriter::ThreadedWriter> m_pRecordingWriter;
+        std::atomic<bool>        m_isRecording { false };
+        // Set BEFORE m_isRecording.store(true, release) in startRecording() and
+        // only ever read after m_isRecording.load(acquire) returns true — the
+        // acquire/release pairing on m_isRecording makes this plain (non-atomic)
+        // read safe, same pattern already used for e.g. m_listenerTransformDirty.
+        RecordingSource           m_recordingSource { RecordingSource::Downmix };
+        std::atomic<juce::int64>  m_recordingSamplesWritten { 0 };
 
         /**
          * @brief Per-channel hold counter for the HRTF convolution bypass.

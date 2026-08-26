@@ -855,6 +855,13 @@ namespace AT
         // proximity-based clustering (k-means).
         const float gridRes = m_gridRes.load(std::memory_order_relaxed);
         const int   minCount = m_minBlockCount.load(std::memory_order_relaxed);
+        // Same runtime-configurable cap as runLocalizationOnWindow()'s maxSrc —
+        // MAX_SOURCES below is only the compile-time CEILING (see its own doc
+        // comment); using it directly here (as this code used to) let the
+        // accumulated tracked-source count grow past the user's configured
+        // maxSources over many cycles, since different windows can surface
+        // different subsets of a scene with more real sources than maxSources.
+        const int maxSrc = juce::jlimit(1, MAX_SOURCES, m_maxSources.load(std::memory_order_relaxed));
 
         struct Bucket { std::array<float, 3> roundedPos; int count; };
         std::vector<Bucket> buckets;
@@ -904,7 +911,7 @@ namespace AT
             if (bucket.count < minCount)
                 break; // sorted descending: nothing further qualifies either
             newSources.push_back({ bucket.roundedPos[0], bucket.roundedPos[1], bucket.roundedPos[2] });
-            if ((int) newSources.size() >= MAX_SOURCES)
+            if ((int) newSources.size() >= maxSrc)
                 break;
         }
 
@@ -961,7 +968,7 @@ namespace AT
         for (size_t j = 0; j < newSources.size(); ++j)
         {
             if (matched[j]) continue;
-            if ((int) m_trackedCandidates.size() >= MAX_SOURCES) break;
+            if ((int) m_trackedCandidates.size() >= maxSrc) break;
             TrackedCandidate c;
             c.pos = newSources[j];
             c.presentStreak = 1;

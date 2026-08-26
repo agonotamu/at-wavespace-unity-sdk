@@ -79,6 +79,28 @@ public class At_MasterOutput : MonoBehaviour
     public bool    isInitialized = false;
 
     /// <summary>
+    /// Which internal bus AT_WS_startRecording() taps — see the native
+    /// AT::SpatializationEngine::RecordingSource doc comment for the exact
+    /// tap points. Values match the native enum's underlying ints exactly.
+    /// </summary>
+    public enum RecordingSource
+    {
+        Downmix          = 0, // final 2-channel bus — requires binaural virtualization enabled
+        RawMultichannel  = 1, // raw WFS multichannel bus, pre-downmix, pre-master-gain
+        SimulatedCapture = 2, // same bus as RawMultichannel, free-field capture-simulation model
+    }
+
+    /// <summary>File format for AT_WS_startRecording(). Matches the native enum.</summary>
+    public enum RecordingFormat
+    {
+        Wav    = 0,
+        Vorbis = 1,
+    }
+
+    /// <summary>True while a recording is in progress. Polled from AT_WS_isRecording() — see Update().</summary>
+    public bool isRecording = false;
+
+    /// <summary>
     /// Effective source radius (metres) for WFS singularity regularisation.
     /// Controls both audio (AT_WS_setSecondarySourceSize) and visual shader (_secondarySourceSize).
     /// P1: prevents cos(φ)/sqrt(r) amplitude divergence near the array plane.
@@ -542,6 +564,56 @@ public class At_MasterOutput : MonoBehaviour
     }
     #endregion
 
+    #region Recording
+    // See AT::SpatializationEngine::startRecording() (native) for the full
+    // contract — exact tap points per RecordingSource, format handling.
+    // Real-time only: recording must be started/stopped while the engine is
+    // already running (Play Mode) — there is no offline rendering path.
+
+    /// <summary>
+    /// Starts real-time recording of the engine's own output to a file.
+    /// NOT real-time safe (allocates a file writer) — call from the main/Unity
+    /// thread only, e.g. an Editor window button, never from an audio callback.
+    /// </summary>
+    /// <param name="filePath">Destination file path (extension not enforced — pick one matching format).</param>
+    /// <param name="source">Which internal bus to tap.</param>
+    /// <param name="format">WAV (PCM) or Ogg Vorbis.</param>
+    /// <param name="bitDepthOrQuality">WAV: bit depth (16/24/32). Vorbis: quality index (0-10).</param>
+    /// <returns>true if recording started successfully.</returns>
+    public bool StartRecording(string filePath, RecordingSource source, RecordingFormat format, int bitDepthOrQuality)
+    {
+        if (string.IsNullOrEmpty(filePath))
+        {
+            Debug.LogError("[AT_WS] StartRecording: file path is empty");
+            return false;
+        }
+
+        bool ok = AT_WS_startRecording(filePath, (int)source, (int)format, bitDepthOrQuality) == AUDIO_PLUGIN_OK;
+        if (ok) isRecording = true;
+        else    Debug.LogError($"[AT_WS] Failed to start recording to {filePath} "
+                               + $"(source={source}, format={format}) — see native log for the exact reason "
+                               + "(e.g. Downmix requires binaural virtualization to be enabled).");
+        return ok;
+    }
+
+    /// <summary>Stops the current recording, if any. Safe to call even if not recording.</summary>
+    public void StopRecording()
+    {
+        if (AT_WS_stopRecording() != AUDIO_PLUGIN_OK)
+            Debug.LogError("[AT_WS] Failed to stop recording");
+        isRecording = false;
+    }
+
+    /// <summary>Refreshes the `isRecording` field from the native engine. Cheap — safe to call every frame/OnGUI.</summary>
+    public void RefreshIsRecording()
+    {
+        isRecording = AT_WS_isRecording() != 0;
+    }
+
+    /// <summary>Number of samples (per channel) written so far in the current/last recording.</summary>
+    public long GetRecordingSamplesWritten() => AT_WS_getRecordingSamplesWritten();
+    #endregion
+
     #region Metering
     /// <summary>Reads output RMS meter values from the native library into the provided array.</summary>
     public unsafe void getMeters(float[] meters, int arraySize)
@@ -595,6 +667,10 @@ public class At_MasterOutput : MonoBehaviour
     [DllImport("at_wavespace_engine", CallingConvention = CallingConvention.StdCall)] private static extern int AT_WS_startPlayer(int uid);
     [DllImport("at_wavespace_engine", CallingConvention = CallingConvention.StdCall)] private static extern int AT_WS_stopPlayer(int uid);
     [DllImport("at_wavespace_engine", CallingConvention = CallingConvention.StdCall)] private static extern int AT_WS_stopAllPlayers();
+    [DllImport("at_wavespace_engine", CallingConvention = CallingConvention.StdCall)] private static extern int AT_WS_startRecording(string filePath, int source, int format, int bitDepthOrQuality);
+    [DllImport("at_wavespace_engine", CallingConvention = CallingConvention.StdCall)] private static extern int AT_WS_stopRecording();
+    [DllImport("at_wavespace_engine", CallingConvention = CallingConvention.StdCall)] private static extern int AT_WS_isRecording();
+    [DllImport("at_wavespace_engine", CallingConvention = CallingConvention.StdCall)] private static extern long AT_WS_getRecordingSamplesWritten();
     [DllImport("at_wavespace_engine", CallingConvention = CallingConvention.StdCall)] private static extern int AT_WS_setMasterGain(float masterGain);
     [DllImport("at_wavespace_engine", CallingConvention = CallingConvention.StdCall)] private static extern int AT_WS_setMakeupMasterGain(float makeupMasterGain);
     [DllImport("at_wavespace_engine", CallingConvention = CallingConvention.StdCall)] private static extern int AT_WS_setVirtualSpeakerTransform(float[] positions, float[] rotations, float[] forwards, int count);

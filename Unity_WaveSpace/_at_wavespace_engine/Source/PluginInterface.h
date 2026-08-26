@@ -693,6 +693,58 @@ EXPORT_API int CALL_CONV AT_WS_loadDefaultHRTF();
  */
 EXPORT_API int CALL_CONV AT_WS_setBinauralRenderMode(int mode);
 
+// ============================================================================
+// RECORDING — real-time tap of the engine's own output bus to a file. See
+// AT::SpatializationEngine::startRecording() for the full contract (exact
+// tap points, why Downmix/RawMultichannel/SimulatedCapture differ).
+// ============================================================================
+
+/**
+ * @brief Starts real-time recording of the engine's own output to a file.
+ *
+ * NOT real-time safe (allocates a file writer) — do not call from the audio
+ * thread. Recording itself, once started, runs on a background thread and
+ * does not block audio.
+ *
+ * @param filePath          Destination file path (extension not enforced —
+ *                           pick one matching `format`).
+ * @param source            0 = Downmix (final 2-channel bus — HRTF or
+ *                           amplitude-panning downmix; requires binaural
+ *                           virtualization to be enabled, fails otherwise).
+ *                           1 = RawMultichannel (raw WFS multichannel bus,
+ *                           pre-downmix, pre-master-gain).
+ *                           2 = SimulatedCapture (same bus as
+ *                           RawMultichannel, but every active player's WFS
+ *                           gain/delay is temporarily switched to the
+ *                           free-field capture-simulation model — matches
+ *                           simulate_capture.py).
+ * @param format            0 = WAV (PCM), 1 = Ogg Vorbis.
+ * @param bitDepthOrQuality For WAV: bit depth (16/24/32). For Vorbis:
+ *                          quality index (0-10).
+ * @return AUDIO_PLUGIN_OK (0) if recording started, AUDIO_PLUGIN_ERROR (1) otherwise
+ *         (e.g. Downmix requested while binaural virtualization is disabled,
+ *         or the file could not be created).
+ */
+EXPORT_API int CALL_CONV AT_WS_startRecording(const char* filePath, int source, int format, int bitDepthOrQuality);
+
+/**
+ * @brief Stops the current recording, if any. Safe to call even if not recording.
+ * @return AUDIO_PLUGIN_OK (0) always (not an error if nothing was recording).
+ */
+EXPORT_API int CALL_CONV AT_WS_stopRecording();
+
+/**
+ * @brief Returns whether a recording is currently in progress.
+ * @return 1 if recording, 0 otherwise.
+ */
+EXPORT_API int CALL_CONV AT_WS_isRecording();
+
+/**
+ * @brief Returns the number of samples (per channel) written so far in the
+ *        current/last recording.
+ */
+EXPORT_API long long CALL_CONV AT_WS_getRecordingSamplesWritten();
+
 /**
  * @brief Set simple binaural spatialization mode for A/B comparison
  *

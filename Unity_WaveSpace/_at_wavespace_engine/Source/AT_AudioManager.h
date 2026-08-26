@@ -402,6 +402,31 @@ namespace AT
             m_spatializationEngine.setBinauralRenderMode(mode);
         }
 
+        // ====================================================================
+        // RECORDING — see SpatializationEngine::startRecording() for the full
+        // contract (sources, formats, tap points). Thin passthrough, same
+        // pattern as the rest of this class.
+        // ====================================================================
+        bool startRecording(const juce::File& destFile,
+                             AT::SpatializationEngine::RecordingSource source,
+                             AT::SpatializationEngine::RecordingFormat format,
+                             int bitDepthOrQuality)
+        {
+            return m_spatializationEngine.startRecording(destFile, source, format, bitDepthOrQuality);
+        }
+        void stopRecording()
+        {
+            m_spatializationEngine.stopRecording();
+        }
+        bool isRecording() const
+        {
+            return m_spatializationEngine.isRecording();
+        }
+        juce::int64 getRecordingSamplesWritten() const
+        {
+            return m_spatializationEngine.getRecordingSamplesWritten();
+        }
+
         /**
          * @brief Sets the HRTF reference distance. Call once at setup time.
          * rVirtual and azimuthDeg are computed internally from scene geometry.

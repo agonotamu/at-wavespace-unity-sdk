@@ -1210,6 +1210,65 @@ EXPORT_API int CALL_CONV AT_WS_setBinauralRenderMode(int mode)
     }
 }
 
+EXPORT_API int CALL_CONV AT_WS_startRecording(const char* filePath, int source, int format, int bitDepthOrQuality)
+{
+    std::lock_guard<std::mutex> lock(g_mutex);
+
+    if (!IsManagerValid() || filePath == nullptr)
+        return AUDIO_PLUGIN_ERROR;
+
+    try
+    {
+        const bool ok = g_audioManager->startRecording(
+            juce::File(filePath),
+            static_cast<AT::SpatializationEngine::RecordingSource>(source),
+            static_cast<AT::SpatializationEngine::RecordingFormat>(format),
+            bitDepthOrQuality);
+        return ok ? AUDIO_PLUGIN_OK : AUDIO_PLUGIN_ERROR;
+    }
+    catch (...)
+    {
+        return AUDIO_PLUGIN_ERROR;
+    }
+}
+
+EXPORT_API int CALL_CONV AT_WS_stopRecording()
+{
+    std::lock_guard<std::mutex> lock(g_mutex);
+    try
+    {
+        if (!g_audioManager)
+            return AUDIO_PLUGIN_OK; // not an error — might be called after shutdown
+
+        g_audioManager->stopRecording();
+        return AUDIO_PLUGIN_OK;
+    }
+    catch (...)
+    {
+        return AUDIO_PLUGIN_ERROR;
+    }
+}
+
+EXPORT_API int CALL_CONV AT_WS_isRecording()
+{
+    std::lock_guard<std::mutex> lock(g_mutex);
+
+    if (!IsManagerValid())
+        return 0;
+
+    return g_audioManager->isRecording() ? 1 : 0;
+}
+
+EXPORT_API long long CALL_CONV AT_WS_getRecordingSamplesWritten()
+{
+    std::lock_guard<std::mutex> lock(g_mutex);
+
+    if (!IsManagerValid())
+        return 0;
+
+    return g_audioManager->getRecordingSamplesWritten();
+}
+
 EXPORT_API int CALL_CONV AT_WS_setIsSimpleBinauralSpat(bool isSimpleBinauralSpat)
 {
     try
