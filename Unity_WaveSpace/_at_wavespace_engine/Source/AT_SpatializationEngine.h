@@ -192,12 +192,20 @@ namespace AT
         // Enabling also pushes the engine's current virtual speaker geometry
         // down to the player (see SpatPlayer::prepare6dofMask) — the 2D
         // player's channels are assumed to match m_virtualSpeakerPositionsFlat
-        // 1:1, same convention as WFS.
+        // 1:1, same convention as WFS. Localization is done by MUSIC
+        // (Schmidt 1986) — see AT_SixDofMaskProcessor.
         // ============================================================================
         void setPlayer6dofMaskEnabled(int uid, bool isEnabled);
+        void setPlayer6dofMaxSources(int uid, int maxSources);
         void setPlayer6dofGridRes(int uid, float gridRes);
         void setPlayer6dofMinBlockCount(int uid, int minBlockCount);
         void setPlayer6dofNumBufferedBlocks(int uid, int numBufferedBlocks);
+        void setPlayer6dofSearchGridResolution(int uid, float searchGridResolution);
+        void setPlayer6dofMaxBins(int uid, int maxBins);
+        void setPlayer6dofBandHzMin(int uid, float bandHzMin);
+        void setPlayer6dofBandHzMax(int uid, float bandHzMax);
+        void setPlayer6dofYRangeMin(int uid, float yRangeMin);
+        void setPlayer6dofYRangeMax(int uid, float yRangeMax);
         int  getPlayer6dofNumDetectedSources(int uid);
         int  getPlayer6dofSourcePositions(int uid, float* outPositions, int maxSources);
 

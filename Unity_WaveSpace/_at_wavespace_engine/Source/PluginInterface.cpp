@@ -627,6 +627,23 @@ EXPORT_API int CALL_CONV AT_WS_setPlayer6dofMaskEnabled(int uid, bool isEnabled)
     }
 }
 
+EXPORT_API int CALL_CONV AT_WS_setPlayer6dofMaxSources(int uid, int maxSources)
+{
+    std::lock_guard<std::mutex> lock(g_mutex);
+    try
+    {
+        if (!g_audioManager)
+            return AUDIO_PLUGIN_OK;
+
+        g_audioManager->setPlayer6dofMaxSources(uid, maxSources);
+        return AUDIO_PLUGIN_OK;
+    }
+    catch (...)
+    {
+        return AUDIO_PLUGIN_ERROR;
+    }
+}
+
 EXPORT_API int CALL_CONV AT_WS_setPlayer6dofGridRes(int uid, float gridRes)
 {
     std::lock_guard<std::mutex> lock(g_mutex);
@@ -670,6 +687,108 @@ EXPORT_API int CALL_CONV AT_WS_setPlayer6dofNumBufferedBlocks(int uid, int numBu
             return AUDIO_PLUGIN_OK;
 
         g_audioManager->setPlayer6dofNumBufferedBlocks(uid, numBufferedBlocks);
+        return AUDIO_PLUGIN_OK;
+    }
+    catch (...)
+    {
+        return AUDIO_PLUGIN_ERROR;
+    }
+}
+
+EXPORT_API int CALL_CONV AT_WS_setPlayer6dofSearchGridResolution(int uid, float searchGridResolution)
+{
+    std::lock_guard<std::mutex> lock(g_mutex);
+    try
+    {
+        if (!g_audioManager)
+            return AUDIO_PLUGIN_OK;
+
+        g_audioManager->setPlayer6dofSearchGridResolution(uid, searchGridResolution);
+        return AUDIO_PLUGIN_OK;
+    }
+    catch (...)
+    {
+        return AUDIO_PLUGIN_ERROR;
+    }
+}
+
+EXPORT_API int CALL_CONV AT_WS_setPlayer6dofMaxBins(int uid, int maxBins)
+{
+    std::lock_guard<std::mutex> lock(g_mutex);
+    try
+    {
+        if (!g_audioManager)
+            return AUDIO_PLUGIN_OK;
+
+        g_audioManager->setPlayer6dofMaxBins(uid, maxBins);
+        return AUDIO_PLUGIN_OK;
+    }
+    catch (...)
+    {
+        return AUDIO_PLUGIN_ERROR;
+    }
+}
+
+EXPORT_API int CALL_CONV AT_WS_setPlayer6dofBandHzMin(int uid, float bandHzMin)
+{
+    std::lock_guard<std::mutex> lock(g_mutex);
+    try
+    {
+        if (!g_audioManager)
+            return AUDIO_PLUGIN_OK;
+
+        g_audioManager->setPlayer6dofBandHzMin(uid, bandHzMin);
+        return AUDIO_PLUGIN_OK;
+    }
+    catch (...)
+    {
+        return AUDIO_PLUGIN_ERROR;
+    }
+}
+
+EXPORT_API int CALL_CONV AT_WS_setPlayer6dofBandHzMax(int uid, float bandHzMax)
+{
+    std::lock_guard<std::mutex> lock(g_mutex);
+    try
+    {
+        if (!g_audioManager)
+            return AUDIO_PLUGIN_OK;
+
+        g_audioManager->setPlayer6dofBandHzMax(uid, bandHzMax);
+        return AUDIO_PLUGIN_OK;
+    }
+    catch (...)
+    {
+        return AUDIO_PLUGIN_ERROR;
+    }
+}
+
+EXPORT_API int CALL_CONV AT_WS_setPlayer6dofYRangeMin(int uid, float yRangeMin)
+{
+    std::lock_guard<std::mutex> lock(g_mutex);
+    try
+    {
+        if (!g_audioManager)
+            return AUDIO_PLUGIN_OK;
+
+        g_audioManager->setPlayer6dofYRangeMin(uid, yRangeMin);
+        return AUDIO_PLUGIN_OK;
+    }
+    catch (...)
+    {
+        return AUDIO_PLUGIN_ERROR;
+    }
+}
+
+EXPORT_API int CALL_CONV AT_WS_setPlayer6dofYRangeMax(int uid, float yRangeMax)
+{
+    std::lock_guard<std::mutex> lock(g_mutex);
+    try
+    {
+        if (!g_audioManager)
+            return AUDIO_PLUGIN_OK;
+
+        g_audioManager->setPlayer6dofYRangeMax(uid, yRangeMax);
         return AUDIO_PLUGIN_OK;
     }
     catch (...)

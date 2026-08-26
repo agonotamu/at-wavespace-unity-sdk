@@ -317,11 +317,15 @@ namespace AT
         void setSecondarySourceSize(float secondarySourceSize);
 
         // ====================================================================
-        // 6DOF SOURCE MASKING (2D players only)
+        // 6DOF SOURCE MASKING (2D players only) — localization by MUSIC.
         // ====================================================================
         void setPlayer6dofMaskEnabled(int uid, bool isEnabled)
         {
             m_spatializationEngine.setPlayer6dofMaskEnabled(uid, isEnabled);
+        }
+        void setPlayer6dofMaxSources(int uid, int maxSources)
+        {
+            m_spatializationEngine.setPlayer6dofMaxSources(uid, maxSources);
         }
         void setPlayer6dofGridRes(int uid, float gridRes)
         {
@@ -334,6 +338,30 @@ namespace AT
         void setPlayer6dofNumBufferedBlocks(int uid, int numBufferedBlocks)
         {
             m_spatializationEngine.setPlayer6dofNumBufferedBlocks(uid, numBufferedBlocks);
+        }
+        void setPlayer6dofSearchGridResolution(int uid, float searchGridResolution)
+        {
+            m_spatializationEngine.setPlayer6dofSearchGridResolution(uid, searchGridResolution);
+        }
+        void setPlayer6dofMaxBins(int uid, int maxBins)
+        {
+            m_spatializationEngine.setPlayer6dofMaxBins(uid, maxBins);
+        }
+        void setPlayer6dofBandHzMin(int uid, float bandHzMin)
+        {
+            m_spatializationEngine.setPlayer6dofBandHzMin(uid, bandHzMin);
+        }
+        void setPlayer6dofBandHzMax(int uid, float bandHzMax)
+        {
+            m_spatializationEngine.setPlayer6dofBandHzMax(uid, bandHzMax);
+        }
+        void setPlayer6dofYRangeMin(int uid, float yRangeMin)
+        {
+            m_spatializationEngine.setPlayer6dofYRangeMin(uid, yRangeMin);
+        }
+        void setPlayer6dofYRangeMax(int uid, float yRangeMax)
+        {
+            m_spatializationEngine.setPlayer6dofYRangeMax(uid, yRangeMax);
         }
         int getPlayer6dofNumDetectedSources(int uid)
         {

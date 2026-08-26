@@ -3,6 +3,7 @@
 
 using UnityEngine;
 
+[System.Serializable]
 public class At_OutputState
 {
     /// <summary>Name of the selected audio device.</summary>

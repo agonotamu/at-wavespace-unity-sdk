@@ -6,8 +6,9 @@
 
 #include "AT_SixDofMaskProcessor.h"
 #include <cmath>
+#include <complex>
 #include <algorithm>
-#include <iostream>
+#include <numeric>
 
 // ── TEMPORARY diagnostic logging — console app only, plain std::cout (no
 // Unity/LOG() dependency). Flip to 0 to silence once diagnosis is done;
@@ -17,53 +18,88 @@
 namespace AT
 {
     // ====================================================================
-    // Small 4x4 linear solve (Gaussian elimination with partial pivoting).
-    // Used by sphericalInterpolation() — avoids pulling in a linear-algebra
-    // dependency (Eigen etc.) for a 4-unknown system.
+    // In-house real-symmetric Jacobi eigenvalue solver — the entire
+    // replacement for np.linalg.eigh() used by the Python prototypes. See
+    // computeSignalSubspace()'s doc comment (header) for why a REAL
+    // symmetric solver is enough to diagonalize the COMPLEX Hermitian
+    // covariance matrix MUSIC needs.
     // ====================================================================
     namespace
     {
-        bool solve4x4(double A[4][4], double b[4], double outX[4])
+        /**
+         * @brief Classical cyclic Jacobi eigenvalue algorithm.
+         * @param A  n x n real symmetric matrix, row-major. Diagonalized in
+         *           place: after return, A's diagonal holds the eigenvalues
+         *           (unsorted) and its off-diagonal entries are ~0.
+         * @param n  Matrix dimension.
+         * @param V  Filled with the eigenvectors as columns (V[row*n+col]),
+         *           same order as A's diagonal.
+         *
+         * No third-party dependency, no external library — a handful of
+         * classical Givens-style rotations repeated until the off-diagonal
+         * energy is negligible. Adequate for the background-thread,
+         * periodic-update cost budget this feature targets (see the
+         * 6dof-nav skill's real-time feasibility notes) — not intended to
+         * compete with a tuned LAPACK routine on very large matrices.
+         */
+        void jacobiEigenSymmetric(std::vector<double>& A, int n, std::vector<double>& V, int maxSweeps = 60)
         {
-            // Augmented matrix Gaussian elimination, partial pivoting.
-            for (int col = 0; col < 4; ++col)
+            V.assign((size_t) n * (size_t) n, 0.0);
+            for (int i = 0; i < n; ++i)
+                V[(size_t) i * n + i] = 1.0;
+            if (n <= 1)
+                return;
+
+            for (int sweep = 0; sweep < maxSweeps; ++sweep)
             {
-                int pivotRow = col;
-                double maxVal = std::abs(A[col][col]);
-                for (int row = col + 1; row < 4; ++row)
+                double offDiagSum = 0.0;
+                for (int p = 0; p < n - 1; ++p)
+                    for (int q = p + 1; q < n; ++q)
+                        offDiagSum += A[(size_t) p * n + q] * A[(size_t) p * n + q];
+                if (offDiagSum < 1e-18)
+                    break; // converged
+
+                for (int p = 0; p < n - 1; ++p)
                 {
-                    if (std::abs(A[row][col]) > maxVal)
+                    for (int q = p + 1; q < n; ++q)
                     {
-                        maxVal = std::abs(A[row][col]);
-                        pivotRow = row;
+                        const double apq = A[(size_t) p * n + q];
+                        if (std::abs(apq) < 1e-300)
+                            continue;
+
+                        const double app = A[(size_t) p * n + p];
+                        const double aqq = A[(size_t) q * n + q];
+                        const double theta = (aqq - app) / (2.0 * apq);
+                        const double t = (theta >= 0.0 ? 1.0 : -1.0)
+                                        / (std::abs(theta) + std::sqrt(theta * theta + 1.0));
+                        const double c = 1.0 / std::sqrt(t * t + 1.0);
+                        const double s = t * c;
+
+                        A[(size_t) p * n + p] = app - t * apq;
+                        A[(size_t) q * n + q] = aqq + t * apq;
+                        A[(size_t) p * n + q] = 0.0;
+                        A[(size_t) q * n + p] = 0.0;
+
+                        for (int i = 0; i < n; ++i)
+                        {
+                            if (i == p || i == q) continue;
+                            const double aip = A[(size_t) i * n + p];
+                            const double aiq = A[(size_t) i * n + q];
+                            const double newip = c * aip - s * aiq;
+                            const double newiq = s * aip + c * aiq;
+                            A[(size_t) i * n + p] = newip; A[(size_t) p * n + i] = newip;
+                            A[(size_t) i * n + q] = newiq; A[(size_t) q * n + i] = newiq;
+                        }
+                        for (int i = 0; i < n; ++i)
+                        {
+                            const double vip = V[(size_t) i * n + p];
+                            const double viq = V[(size_t) i * n + q];
+                            V[(size_t) i * n + p] = c * vip - s * viq;
+                            V[(size_t) i * n + q] = s * vip + c * viq;
+                        }
                     }
                 }
-                if (maxVal < 1e-12)
-                    return false; // singular / degenerate geometry
-
-                if (pivotRow != col)
-                {
-                    std::swap(A[col], A[pivotRow]);
-                    std::swap(b[col], b[pivotRow]);
-                }
-
-                for (int row = col + 1; row < 4; ++row)
-                {
-                    const double factor = A[row][col] / A[col][col];
-                    for (int k = col; k < 4; ++k)
-                        A[row][k] -= factor * A[col][k];
-                    b[row] -= factor * b[col];
-                }
             }
-
-            for (int row = 3; row >= 0; --row)
-            {
-                double sum = b[row];
-                for (int k = row + 1; k < 4; ++k)
-                    sum -= A[row][k] * outX[k];
-                outX[row] = sum / A[row][row];
-            }
-            return true;
         }
     }
 
@@ -119,12 +155,8 @@ namespace AT
             const float dz = m_micPositions[(size_t) i][2] - m_arrayCentroid[2];
             maxExtent = std::max(maxExtent, std::sqrt(dx * dx + dy * dy + dz * dz));
         }
-        // Matches the Python prototype's max_plausible_dist / MAX_TDOA_SECONDS
-        // safety margins (see 6dof-nav skill) — generous enough to never
-        // reject a genuine in-room source, tight enough to catch numerical
-        // divergence on near-silent/noisy windows.
+        m_arrayExtent = std::max(0.5f, maxExtent); // search grid radius (buildSearchGrid)
         m_maxPlausibleDist = std::max(1.0f, 10.0f * maxExtent);
-        m_maxDelaySeconds  = (double) (2.0f * maxExtent / SPEED_OF_SOUND) * 1.5;
 
         // Rolling window buffer: sized for the largest configuration we'll
         // ever be asked for (MAX_BUFFERED_BLOCKS_SUPPORTED * maxBlockSize) so
@@ -157,18 +189,14 @@ namespace AT
             smoother.setCurrentAndTargetValue(1.0f); // start in pass-through, matches Bypass state
         }
 
-        // FFT sized for linear (non-circular) cross-correlation of two
-        // windows of up to (maxBlockSize * MAX_BUFFERED_BLOCKS_SUPPORTED)
-        // samples each: need size >= 2x that, rounded up to a power of two.
-        const int maxWindowSamples = m_maxBlockSize * MAX_BUFFERED_BLOCKS_SUPPORTED;
-        int order = 1;
-        while ((1 << order) < maxWindowSamples * 2)
-            ++order;
-        m_fftOrder = order;
-        m_fftSize  = 1 << order;
+        // FFT sized for a SINGLE STFT analysis frame (fixed, small — unlike
+        // the previous GCC-PHAT implementation, which sized its FFT for the
+        // whole analysis window). Reused once per hop per channel.
+        m_fftOrder = 0;
+        while ((1 << m_fftOrder) < STFT_FRAME_SIZE)
+            ++m_fftOrder;
         m_fft = std::make_unique<juce::dsp::FFT>(m_fftOrder);
-        m_fftBufA.assign((size_t) m_fftSize * 2, 0.0f);
-        m_fftBufB.assign((size_t) m_fftSize * 2, 0.0f);
+        m_fftScratch.assign((size_t) STFT_FRAME_SIZE * 2, 0.0f);
 
         m_shouldStop.store(false, std::memory_order_relaxed);
         m_backgroundThread = std::thread([this] { backgroundThreadLoop(); });
@@ -197,6 +225,11 @@ namespace AT
         m_enabled.store(enabled, std::memory_order_relaxed);
     }
 
+    void SixDofMaskProcessor::setMaxSources(int maxSources)
+    {
+        m_maxSources.store(juce::jlimit(1, MAX_SOURCES, maxSources), std::memory_order_relaxed);
+    }
+
     void SixDofMaskProcessor::setGridRes(float gridRes)
     {
         m_gridRes.store(std::max(0.001f, gridRes), std::memory_order_relaxed);
@@ -212,7 +245,37 @@ namespace AT
         const int clamped = juce::jlimit(1, MAX_BUFFERED_BLOCKS_SUPPORTED, numBufferedBlocks);
         m_numBufferedBlocks.store(clamped, std::memory_order_relaxed);
         // m_windowTargetSamples is re-latched at the START of the next window
-        // by the audio thread (see process()) — never mutated mid-window.
+        // by the audio thread (see pushAnalysisBlock()) — never mutated mid-window.
+    }
+
+    void SixDofMaskProcessor::setSearchGridResolution(float searchGridResolution)
+    {
+        m_searchGridResolution.store(std::max(0.01f, searchGridResolution), std::memory_order_relaxed);
+    }
+
+    void SixDofMaskProcessor::setMaxBins(int maxBins)
+    {
+        m_maxBins.store(juce::jlimit(1, 64, maxBins), std::memory_order_relaxed);
+    }
+
+    void SixDofMaskProcessor::setBandHzMin(float bandHzMin)
+    {
+        m_bandHzMin.store(std::max(0.0f, bandHzMin), std::memory_order_relaxed);
+    }
+
+    void SixDofMaskProcessor::setBandHzMax(float bandHzMax)
+    {
+        m_bandHzMax.store(std::max(1.0f, bandHzMax), std::memory_order_relaxed);
+    }
+
+    void SixDofMaskProcessor::setYRangeMin(float yRangeMin)
+    {
+        m_yRangeMin.store(yRangeMin, std::memory_order_relaxed);
+    }
+
+    void SixDofMaskProcessor::setYRangeMax(float yRangeMax)
+    {
+        m_yRangeMax.store(yRangeMax, std::memory_order_relaxed);
     }
 
     // ====================================================================
@@ -378,12 +441,11 @@ namespace AT
     float SixDofMaskProcessor::computeChannelWeight(int channel, const SixDofSourcePosition& source,
                                                       float lx, float ly, float lz) const
     {
-        // Direct port of mask_weights() in apply_mask.py: a microphone is
-        // valid (weight -> 1) iff the source lies between the listener and
-        // that microphone; invalid (weight -> 0) otherwise, with a
+        // Direct port of mask_weights() in apply_mask_MUSIC.py: a microphone
+        // is valid (weight -> 1) iff the source lies between the listener
+        // and that microphone; invalid (weight -> 0) otherwise, with a
         // MASK_TRANSITION-metre continuous ramp instead of a hard cutoff
-        // (avoids zipper artifacts as the listener moves — see the Python
-        // prototype discussion on this exact point).
+        // (avoids zipper artifacts as the listener moves).
         const float vsx = source.x - lx, vsy = source.y - ly, vsz = source.z - lz;
         const float distSrc = std::sqrt(vsx * vsx + vsy * vsy + vsz * vsz);
         if (distSrc < 1e-6f)
@@ -447,302 +509,335 @@ namespace AT
         }
     }
 
+    // ====================================================================
+    // MUSIC localization
+    // ====================================================================
+    std::vector<SixDofMaskProcessor::GridPoint>
+    SixDofMaskProcessor::buildSearchGrid(float resolution, float yMin, float yMax) const
+    {
+        // Direct port of build_grid() in apply_mask_MUSIC.py: a disc of
+        // radius equal to the array's own extent (X/Z plane), swept over
+        // [yMin, yMax] in Y at 2x the horizontal resolution (less vertical
+        // precision needed in practice — matches the Python default).
+        std::vector<GridPoint> grid;
+        const float radius = m_arrayExtent;
+        if (resolution <= 0.0f || radius <= 0.0f)
+            return grid;
+
+        const float radiusLimit = radius * 0.98f;
+        const float yStep = std::max(resolution * 2.0f, 0.01f);
+        for (float x = -radius; x <= radius + 1e-4f; x += resolution)
+        {
+            for (float z = -radius; z <= radius + 1e-4f; z += resolution)
+            {
+                if (std::sqrt(x * x + z * z) >= radiusLimit)
+                    continue;
+                for (float y = yMin; y <= yMax + 1e-4f; y += yStep)
+                    grid.push_back({ x, y, z });
+            }
+        }
+        return grid;
+    }
+
+    void SixDofMaskProcessor::steeringVector(const GridPoint& pos, float freqHz,
+                                               std::vector<std::complex<float>>& outA) const
+    {
+        // a_i(p,f) = (1/r_i) * exp(-j*2*pi*f*r_i/c), normalized to unit norm
+        // — same physical model (propagation delay + 1/r decay) as
+        // simulate_capture.py / apply_mask_MUSIC.py's steering_vector().
+        outA.resize((size_t) m_numChannels);
+        float normSq = 0.0f;
+        for (int i = 0; i < m_numChannels; ++i)
+        {
+            const auto& mic = m_micPositions[(size_t) i];
+            const float dx = mic[0] - pos.x, dy = mic[1] - pos.y, dz = mic[2] - pos.z;
+            const float dist = std::max(std::sqrt(dx * dx + dy * dy + dz * dz), MIN_DIST);
+            const float phase = -2.0f * juce::MathConstants<float>::pi * freqHz * dist / SPEED_OF_SOUND;
+            const std::complex<float> val = std::polar(1.0f / dist, phase);
+            outA[(size_t) i] = val;
+            normSq += std::norm(val);
+        }
+        const float norm = std::sqrt(std::max(normSq, 1e-20f));
+        for (auto& v : outA)
+            v /= norm;
+    }
+
+    void SixDofMaskProcessor::computeSignalSubspace(const std::vector<std::complex<float>>& K, int numSources,
+                                                       std::vector<std::vector<std::complex<float>>>& outSignalSubspace) const
+    {
+        outSignalSubspace.clear();
+        const int n = m_numChannels;
+        if (n < 2)
+            return;
+        numSources = juce::jlimit(1, n - 1, numSources);
+
+        // Real 2n x 2n block embedding of the complex Hermitian K — see the
+        // header's computeSignalSubspace() doc comment for the derivation.
+        const int n2 = 2 * n;
+        std::vector<double> M((size_t) n2 * (size_t) n2, 0.0);
+        for (int r = 0; r < n; ++r)
+        {
+            for (int c = 0; c < n; ++c)
+            {
+                const std::complex<float> k = K[(size_t) r * n + c];
+                const double re = (double) k.real();
+                const double im = (double) k.imag();
+                M[(size_t) r * n2 + c]             = re;   // top-left:     Kre
+                M[(size_t) r * n2 + (c + n)]       = -im;  // top-right:   -Kim
+                M[(size_t) (r + n) * n2 + c]       = im;   // bottom-left:  Kim
+                M[(size_t) (r + n) * n2 + (c + n)] = re;   // bottom-right: Kre
+            }
+        }
+
+        std::vector<double> V;
+        jacobiEigenSymmetric(M, n2, V);
+
+        std::vector<int> order(n2);
+        std::iota(order.begin(), order.end(), 0);
+        std::sort(order.begin(), order.end(),
+                  [&](int a, int b) { return M[(size_t) a * n2 + a] > M[(size_t) b * n2 + b]; });
+
+        // Every real eigenvalue of M is doubled (one complex eigenvalue of K
+        // -> two real eigenvalues of M) — walk the descending list, and once
+        // an index is used, also mark its numerically-closest still-unused
+        // neighbour as consumed (its degenerate partner), so it isn't picked
+        // again as a spurious extra "source" a few steps later.
+        std::vector<bool> used(n2, false);
+        for (int idx = 0; idx < n2 && (int) outSignalSubspace.size() < numSources; ++idx)
+        {
+            const int i = order[idx];
+            if (used[i]) continue;
+            used[i] = true;
+
+            const double lambda = M[(size_t) i * n2 + i];
+            for (int idx2 = idx + 1; idx2 < n2; ++idx2)
+            {
+                const int j = order[idx2];
+                if (used[j]) continue;
+                if (std::abs(M[(size_t) j * n2 + j] - lambda) < 1e-6 * (std::abs(lambda) + 1e-12))
+                {
+                    used[j] = true;
+                    break;
+                }
+            }
+
+            std::vector<std::complex<float>> w((size_t) n);
+            for (int r = 0; r < n; ++r)
+                w[(size_t) r] = std::complex<float>((float) V[(size_t) r * n2 + i],
+                                                       (float) V[(size_t) (r + n) * n2 + i]);
+            outSignalSubspace.push_back(std::move(w));
+        }
+    }
+
     void SixDofMaskProcessor::runLocalizationOnWindow(const std::vector<std::vector<float>>& window)
     {
         if (window.empty() || window[0].empty())
             return;
 
         const int numSamples = (int) window[0].size();
-        const float* refPtr = window[(size_t) REF_CHANNEL].data();
 
         // Skip near-silent windows outright (matches the Python prototype's
-        // "bloc quasi silencieux, ignoré" guard) — avoids feeding GCC-PHAT
-        // pure noise, which is exactly the case that produced wildly
-        // divergent positions on the first real-corpus test (see 6dof-nav
-        // skill, "diag_localization.py" findings).
+        // "bloc quasi silencieux, ignoré" guard).
         float peak = 0.0f;
-        float refPeak = 0.0f;
         for (int ch = 0; ch < m_numChannels; ++ch)
             for (float v : window[(size_t) ch])
                 peak = std::max(peak, std::abs(v));
-        for (int i = 0; i < numSamples; ++i)
-            refPeak = std::max(refPeak, std::abs(refPtr[i]));
 
 #if AT_SIXDOF_DEBUG_LOG
-        std::cout << "[6DOF][localize] window peak=" << peak
-                   << "  ref_ch" << REF_CHANNEL << "_peak=" << refPeak;
-        if (refPeak < 1e-6f && peak >= 1e-6f)
-            std::cout << "  <<< REF CHANNEL LOOKS DEAD (silent) WHILE OTHERS AREN'T";
-        std::cout << "\n";
+        std::cout << "[6DOF][localize] window peak=" << peak << "  samples=" << numSamples;
 #endif
-
         if (peak < 1e-6f)
         {
 #if AT_SIXDOF_DEBUG_LOG
-            std::cout << "[6DOF][localize] window SKIPPED (near-silent)\n";
+            std::cout << "  SKIPPED (near-silent)\n";
 #endif
             return;
         }
+        if (numSamples < STFT_FRAME_SIZE)
+        {
+#if AT_SIXDOF_DEBUG_LOG
+            std::cout << "  SKIPPED (window shorter than one STFT frame, "
+                       << STFT_FRAME_SIZE << " samples needed)\n";
+#endif
+            return;
+        }
+#if AT_SIXDOF_DEBUG_LOG
+        std::cout << "\n";
+#endif
 
-        std::vector<double> delaysSeconds((size_t) m_numChannels, 0.0);
-        std::vector<char>   validMask((size_t) m_numChannels, 0);
-        delaysSeconds[REF_CHANNEL] = 0.0;
-        validMask[REF_CHANNEL] = 1;
+        const int maxSrc      = juce::jlimit(1, MAX_SOURCES, m_maxSources.load(std::memory_order_relaxed));
+        const int maxBins     = m_maxBins.load(std::memory_order_relaxed);
+        const float bandMin   = m_bandHzMin.load(std::memory_order_relaxed);
+        const float bandMax   = m_bandHzMax.load(std::memory_order_relaxed);
+        const float gridRes   = m_searchGridResolution.load(std::memory_order_relaxed);
+        const float yMin      = m_yRangeMin.load(std::memory_order_relaxed);
+        const float yMax      = m_yRangeMax.load(std::memory_order_relaxed);
+
+        // ---- Retained frequency bins, linearly spread across [bandMin, bandMax] ----
+        int binLo = juce::jlimit(1, STFT_FRAME_SIZE / 2, (int) std::round(bandMin * STFT_FRAME_SIZE / m_sampleRate));
+        int binHi = juce::jlimit(1, STFT_FRAME_SIZE / 2, (int) std::round(bandMax * STFT_FRAME_SIZE / m_sampleRate));
+        if (binHi < binLo) std::swap(binLo, binHi);
+        std::vector<int> binIndices;
+        binIndices.reserve((size_t) maxBins);
+        for (int i = 0; i < maxBins; ++i)
+        {
+            const float t = (maxBins == 1) ? 0.0f : (float) i / (float) (maxBins - 1);
+            binIndices.push_back(binLo + (int) std::round(t * (float) (binHi - binLo)));
+        }
+
+        // ---- STFT: one small FFT per channel per hop, keep only the
+        //      retained bins (avoids holding full spectra for every frame) ----
+        const int numFrames = (numSamples - STFT_FRAME_SIZE) / STFT_HOP_SIZE + 1;
+        if (numFrames < 1)
+            return;
+
+        std::vector<std::vector<std::vector<std::complex<float>>>> snapshots(
+            binIndices.size(),
+            std::vector<std::vector<std::complex<float>>>((size_t) numFrames,
+                std::vector<std::complex<float>>((size_t) m_numChannels)));
 
         for (int ch = 0; ch < m_numChannels; ++ch)
         {
-            if (ch == REF_CHANNEL) continue;
-            double delaySamples = 0.0;
-            if (gccPhatDelaySamples(refPtr, window[(size_t) ch].data(), numSamples, delaySamples))
+            const float* chData = window[(size_t) ch].data();
+            for (int f = 0; f < numFrames; ++f)
             {
-                delaysSeconds[(size_t) ch] = delaySamples / m_sampleRate;
-                validMask[(size_t) ch] = 1;
+                const int offset = f * STFT_HOP_SIZE;
+                std::fill(m_fftScratch.begin(), m_fftScratch.end(), 0.0f);
+                for (int n = 0; n < STFT_FRAME_SIZE; ++n)
+                {
+                    // Hann window, matches scipy.signal.stft's default.
+                    const float w = 0.5f - 0.5f * std::cos(2.0f * juce::MathConstants<float>::pi * n
+                                                             / (float) (STFT_FRAME_SIZE - 1));
+                    m_fftScratch[(size_t) n * 2] = chData[offset + n] * w;
+                }
+                m_fft->perform(reinterpret_cast<juce::dsp::Complex<float>*>(m_fftScratch.data()),
+                                reinterpret_cast<juce::dsp::Complex<float>*>(m_fftScratch.data()), false);
+
+                for (size_t bi = 0; bi < binIndices.size(); ++bi)
+                {
+                    const int b = binIndices[bi];
+                    snapshots[bi][(size_t) f][(size_t) ch] =
+                        std::complex<float>(m_fftScratch[(size_t) b * 2], m_fftScratch[(size_t) b * 2 + 1]);
+                }
             }
         }
 
-#if AT_SIXDOF_DEBUG_LOG
-        int numValid = 0;
-        double minDelay = 1e300, maxDelay = -1e300;
-        for (int ch = 0; ch < m_numChannels; ++ch)
-        {
-            if (!validMask[(size_t) ch]) continue;
-            numValid++;
-            minDelay = std::min(minDelay, delaysSeconds[(size_t) ch]);
-            maxDelay = std::max(maxDelay, delaysSeconds[(size_t) ch]);
-        }
-        std::cout << "[6DOF][localize] GCC-PHAT valid channels: " << numValid << "/" << m_numChannels
-                   << "  delay range=[" << minDelay << ", " << maxDelay << "] s"
-                   << "  (= [" << minDelay * SPEED_OF_SOUND << ", " << maxDelay * SPEED_OF_SOUND << "] m)\n";
-#endif
-
-        SixDofSourcePosition estimate;
-        double fitResidual = 0.0;
-        if (!sphericalInterpolation(delaysSeconds, validMask, estimate, fitResidual))
+        // ---- Search grid + pseudo-spectrum, accumulated across bands
+        //      ("incoherent combination") ----
+        std::vector<GridPoint> grid = buildSearchGrid(gridRes, yMin, yMax);
+        if (grid.empty())
         {
 #if AT_SIXDOF_DEBUG_LOG
-            std::cout << "[6DOF][localize] spherical interpolation FAILED (degenerate geometry "
-                         "or <4 valid channels)\n";
+            std::cout << "[6DOF][localize] SKIPPED (empty search grid — check search grid "
+                         "resolution / array extent)\n";
 #endif
             return;
         }
+        std::vector<double> spectrum(grid.size(), 0.0);
 
-#if AT_SIXDOF_DEBUG_LOG
-        std::cout << "[6DOF][localize] raw estimate = (" << estimate.x << ", "
-                   << estimate.y << ", " << estimate.z << ")  fit_residual=" << fitResidual << "\n";
-#endif
+        std::vector<std::complex<float>> K((size_t) m_numChannels * (size_t) m_numChannels);
+        std::vector<std::vector<std::complex<float>>> signalSubspace;
+        std::vector<std::complex<float>> a;
 
-        // Fit-quality filter: a window where different mics locked onto
-        // different simultaneously-active sources produces data that is
-        // mathematically inconsistent with ANY single point source — the
-        // solve above still "succeeds" (it's just linear algebra) but the
-        // result is physically meaningless. See MAX_FIT_RESIDUAL's comment
-        // for the empirical validation (clean ~0 vs mixed ~4+, huge margin).
-        if (fitResidual > MAX_FIT_RESIDUAL)
+        for (size_t bi = 0; bi < binIndices.size(); ++bi)
         {
-#if AT_SIXDOF_DEBUG_LOG
-            std::cout << "[6DOF][localize] REJECTED: fit_residual=" << fitResidual
-                       << " > max=" << MAX_FIT_RESIDUAL
-                       << " (likely mixed/contaminated by multiple simultaneous sources)\n";
-#endif
-            return;
-        }
+            const float freqHz = (float) binIndices[bi] * (float) m_sampleRate / (float) STFT_FRAME_SIZE;
 
-        // Plausibility filter (see prepare(): m_maxPlausibleDist).
-        const float dx = estimate.x - m_arrayCentroid[0];
-        const float dy = estimate.y - m_arrayCentroid[1];
-        const float dz = estimate.z - m_arrayCentroid[2];
-        const float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
-        if (dist > m_maxPlausibleDist)
-        {
-#if AT_SIXDOF_DEBUG_LOG
-            std::cout << "[6DOF][localize] REJECTED: dist_from_centroid=" << dist
-                       << " > max_plausible=" << m_maxPlausibleDist << "\n";
-#endif
-            return; // silently drop — same rationale as the Python prototype
-        }
+            // K = (1/T) * sum_t x_t x_t^H — spatial covariance at this band.
+            std::fill(K.begin(), K.end(), std::complex<float>(0.0f, 0.0f));
+            for (int t = 0; t < numFrames; ++t)
+            {
+                const auto& xt = snapshots[bi][(size_t) t];
+                for (int r = 0; r < m_numChannels; ++r)
+                {
+                    const std::complex<float> xr = xt[(size_t) r];
+                    for (int c = 0; c < m_numChannels; ++c)
+                        K[(size_t) r * m_numChannels + c] += xr * std::conj(xt[(size_t) c]);
+                }
+            }
+            const float invT = 1.0f / (float) numFrames;
+            for (auto& v : K) v *= invT;
 
-        pushEstimateAndUpdateModes(estimate);
-    }
-
-    bool SixDofMaskProcessor::gccPhatDelaySamples(const float* ref, const float* ch, int numSamples,
-                                                    double& outDelaySamples)
-    {
-        // Generalized Cross-Correlation with PHAT weighting (Knapp & Carter
-        // 1976) — combines all frequencies at once, so (unlike a single-
-        // frequency phase read) it does not suffer the spatial-aliasing
-        // ambiguity a wide-aperture array would otherwise hit. See 6dof-nav
-        // skill for the full rationale vs. a naive phase-difference read.
-        if (numSamples <= 0 || numSamples * 2 > m_fftSize)
-            return false;
-
-        std::fill(m_fftBufA.begin(), m_fftBufA.end(), 0.0f);
-        std::fill(m_fftBufB.begin(), m_fftBufB.end(), 0.0f);
-        for (int i = 0; i < numSamples; ++i)
-        {
-            m_fftBufA[(size_t) i * 2] = ref[i];
-            m_fftBufB[(size_t) i * 2] = ch[i];
-        }
-
-        m_fft->perform(reinterpret_cast<juce::dsp::Complex<float>*>(m_fftBufA.data()),
-                        reinterpret_cast<juce::dsp::Complex<float>*>(m_fftBufA.data()), false);
-        m_fft->perform(reinterpret_cast<juce::dsp::Complex<float>*>(m_fftBufB.data()),
-                        reinterpret_cast<juce::dsp::Complex<float>*>(m_fftBufB.data()), false);
-
-        // Cross-power spectrum R = A * conj(B), PHAT-normalized (magnitude
-        // divided out), stored back into m_fftBufA.
-        for (int i = 0; i < m_fftSize; ++i)
-        {
-            const float ar = m_fftBufA[(size_t) i * 2],     ai = m_fftBufA[(size_t) i * 2 + 1];
-            const float br = m_fftBufB[(size_t) i * 2],     bi = m_fftBufB[(size_t) i * 2 + 1];
-            // A * conj(B)
-            const float rr = ar * br + ai * bi;
-            const float ri = ai * br - ar * bi;
-            const float mag = std::sqrt(rr * rr + ri * ri) + 1e-12f;
-            m_fftBufA[(size_t) i * 2]     = rr / mag;
-            m_fftBufA[(size_t) i * 2 + 1] = ri / mag;
-        }
-
-        m_fft->perform(reinterpret_cast<juce::dsp::Complex<float>*>(m_fftBufA.data()),
-                        reinterpret_cast<juce::dsp::Complex<float>*>(m_fftBufA.data()), true);
-
-        // Search only within the physically plausible delay range (matches
-        // MAX_TDOA_SECONDS in the Python prototype) — bounds the peak search
-        // and rejects correlation noise outside any sensible array extent.
-        const int maxShift = std::min(m_fftSize / 2 - 1,
-                                       (int) std::ceil(m_maxDelaySeconds * m_sampleRate));
-
-        int bestIndex = 0;
-        float bestVal = -1.0f;
-        // Index 0..maxShift -> positive delays 0..maxShift
-        for (int i = 0; i <= maxShift; ++i)
-        {
-            const float mag = std::abs(m_fftBufA[(size_t) i * 2]);
-            if (mag > bestVal) { bestVal = mag; bestIndex = i; }
-        }
-        // Index fftSize-maxShift..fftSize-1 -> negative delays -maxShift..-1
-        for (int i = m_fftSize - maxShift; i < m_fftSize; ++i)
-        {
-            const float mag = std::abs(m_fftBufA[(size_t) i * 2]);
-            if (mag > bestVal) { bestVal = mag; bestIndex = i - m_fftSize; }
-        }
-
-        outDelaySamples = (double) bestIndex;
-        return true;
-    }
-
-    bool SixDofMaskProcessor::sphericalInterpolation(const std::vector<double>& delaysSeconds,
-                                                        const std::vector<char>& validMask,
-                                                        SixDofSourcePosition& outPos,
-                                                        double& outResidual) const
-    {
-        // Smith & Abel (1987) spherical interpolation: closed-form TDOA
-        // multilateration via a single 4x4 linear solve (unknowns:
-        // Sx, Sy, Sz, R_ref) — no iterative search, no grid. Direct port of
-        // spherical_interpolation() in apply_mask.py.
-        const auto& ref = m_micPositions[(size_t) REF_CHANNEL];
-        const double refX = ref[0], refY = ref[1], refZ = ref[2];
-        const double refDotRef = refX * refX + refY * refY + refZ * refZ;
-
-        double AtA[4][4] = {{0}};
-        double Atb[4]    = {0};
-        int usedCount = 0;
-
-        // Kept for the post-solve residual check (see below) — how well the
-        // solved position actually satisfies each individual TDOA equation.
-        std::vector<std::array<double, 4>> rows;
-        std::vector<double> bs;
-        rows.reserve((size_t) m_numChannels);
-        bs.reserve((size_t) m_numChannels);
-
-        for (int i = 0; i < m_numChannels; ++i)
-        {
-            if (i == REF_CHANNEL || !validMask[(size_t) i])
+            computeSignalSubspace(K, maxSrc, signalSubspace);
+            const int actualNumSrc = (int) signalSubspace.size();
+            if (actualNumSrc == 0)
                 continue;
 
-            const auto& mi = m_micPositions[(size_t) i];
-            const double d = SPEED_OF_SOUND * delaysSeconds[(size_t) i];
-
-            const double row[4] = {
-                -2.0 * (mi[0] - refX),
-                -2.0 * (mi[1] - refY),
-                -2.0 * (mi[2] - refZ),
-                -2.0 * d
-            };
-            const double miDotMi = (double) mi[0] * mi[0] + (double) mi[1] * mi[1] + (double) mi[2] * mi[2];
-            const double b = d * d - miDotMi + refDotRef;
-
-            for (int r = 0; r < 4; ++r)
+            for (size_t gi = 0; gi < grid.size(); ++gi)
             {
-                for (int c = 0; c < 4; ++c)
-                    AtA[r][c] += row[r] * row[c];
-                Atb[r] += row[r] * b;
+                steeringVector(grid[gi], freqHz, a);
+
+                float aNormSq = 0.0f;
+                for (int m = 0; m < m_numChannels; ++m)
+                    aNormSq += std::norm(a[(size_t) m]);
+
+                // Noise-subspace projection via its orthogonal complement
+                // (Parseval): ||E_n^H a||^2 = ||a||^2 - ||E_s^H a||^2 — only
+                // the small signal subspace (size maxSrc) is needed, cheaper
+                // and avoids picking specific representative vectors within
+                // a degenerate noise-eigenvalue cluster.
+                float signalProjSq = 0.0f;
+                for (int s = 0; s < actualNumSrc; ++s)
+                {
+                    std::complex<float> dot(0.0f, 0.0f);
+                    const auto& es = signalSubspace[(size_t) s];
+                    for (int m = 0; m < m_numChannels; ++m)
+                        dot += std::conj(es[(size_t) m]) * a[(size_t) m];
+                    signalProjSq += std::norm(dot);
+                }
+                const float noiseProjSq = std::max(aNormSq - signalProjSq, 1e-12f);
+                spectrum[gi] += 1.0 / (double) noiseProjSq;
             }
-            rows.push_back({ row[0], row[1], row[2], row[3] });
-            bs.push_back(b);
-            ++usedCount;
         }
 
-        if (usedCount < 4)
-            return false; // under-determined, geometry too sparse
+        // ---- Peak selection: up to maxSrc positions, separated by a few
+        //      grid steps so the same lobe isn't picked twice ----
+        std::vector<size_t> order(grid.size());
+        std::iota(order.begin(), order.end(), 0);
+        std::sort(order.begin(), order.end(), [&](size_t x, size_t y) { return spectrum[x] > spectrum[y]; });
 
-        // Tikhonov (ridge) regularization: for a PLANAR mic array (e.g. a
-        // flat circle, all y=0 — this test app's default config, and close
-        // to true even for the real equator ring), the column corresponding
-        // to the out-of-plane axis is exactly (or nearly) zero for every
-        // row, making AtA exactly singular on that axis — solve4x4's
-        // Gaussian elimination then fails outright on the zero pivot.
-        // Python's np.linalg.lstsq handles this gracefully via SVD (returns
-        // the minimum-norm solution, i.e. the under-constrained axis solves
-        // to ~0) — this small diagonal epsilon reproduces that behaviour
-        // for our hand-rolled 4x4 solve without needing a full SVD.
-        // Confirmed via console diagnostic logs: 100% "degenerate geometry"
-        // failures on a flat-circle test config before this fix.
-        constexpr double REG_EPS = 1e-6;
-        for (int i = 0; i < 4; ++i)
-            AtA[i][i] += REG_EPS;
-
-#if AT_SIXDOF_DEBUG_LOG
-        std::cout << "[6DOF][solve] usedCount=" << usedCount
-                   << "  AtA diag=(" << AtA[0][0] << ", " << AtA[1][1] << ", "
-                   << AtA[2][2] << ", " << AtA[3][3] << ")\n";
-#endif
-
-        double x[4] = {0};
-        if (!solve4x4(AtA, Atb, x))
-            return false;
-
-        // Fit-quality residual: how well the solved (x,y,z,R_ref) actually
-        // satisfies each individual TDOA equation. A genuine single point
-        // source gives a residual of essentially zero (validated on a clean
-        // synthetic test: ~1e-10). Delays contaminated by a mix of two
-        // simultaneously-active sources (different mic pairs each locking
-        // onto whichever source dominates their own cross-correlation) are
-        // mathematically INCONSISTENT with any single point source — the
-        // least-squares solve still returns "an answer", but a physically
-        // meaningless one (often near the array center, sometimes with a
-        // negative/nonsensical R_ref) — validated empirically: a mixed-
-        // source test gave a residual ~7 orders of magnitude larger than
-        // the clean case (0.000 vs ~4.1). This residual is therefore a far
-        // more reliable rejection criterion than trying to detect "which
-        // mic locked onto which source" directly.
-        double sumSq = 0.0;
-        for (size_t i = 0; i < rows.size(); ++i)
+        const float minSep = gridRes * 4.0f;
+        std::vector<GridPoint> selected;
+        for (size_t idx : order)
         {
-            const auto& row = rows[i];
-            double predicted = row[0] * x[0] + row[1] * x[1] + row[2] * x[2] + row[3] * x[3];
-            double diff = predicted - bs[i];
-            sumSq += diff * diff;
+            const GridPoint& p = grid[idx];
+            bool tooClose = false;
+            for (const auto& s : selected)
+            {
+                const float dx = p.x - s.x, dy = p.y - s.y, dz = p.z - s.z;
+                if (std::sqrt(dx * dx + dy * dy + dz * dz) < minSep) { tooClose = true; break; }
+            }
+            if (!tooClose)
+            {
+                selected.push_back(p);
+                if ((int) selected.size() >= maxSrc)
+                    break;
+            }
         }
-        outResidual = std::sqrt(sumSq / (double) rows.size());
 
-        outPos.x = (float) x[0];
-        outPos.y = (float) x[1];
-        outPos.z = (float) x[2];
 #if AT_SIXDOF_DEBUG_LOG
-        std::cout << "[6DOF][solve] R_ref (solved) = " << x[3]
-                   << "  fit_residual_rms = " << outResidual << "\n";
+        std::cout << "[6DOF][localize] bins=" << binIndices.size() << "  frames=" << numFrames
+                   << "  grid_points=" << grid.size() << "  peaks_selected=" << selected.size() << "\n";
+        for (const auto& p : selected)
+            std::cout << "[6DOF][localize]   peak @ (" << p.x << ", " << p.y << ", " << p.z << ")\n";
 #endif
-        return true;
+
+        // Plausibility filter (matches the previous implementation's
+        // rationale — reject anything absurdly far from the array, e.g. a
+        // numerical corner case rather than a real position).
+        for (const auto& p : selected)
+        {
+            const float dx = p.x - m_arrayCentroid[0];
+            const float dy = p.y - m_arrayCentroid[1];
+            const float dz = p.z - m_arrayCentroid[2];
+            if (std::sqrt(dx * dx + dy * dy + dz * dz) > m_maxPlausibleDist)
+                continue;
+            // Each peak feeds the SAME temporal history/hysteresis pipeline
+            // as before, unchanged — a genuine source keeps landing near the
+            // same grid point window after window; a pseudo-spectrum
+            // artifact typically does not (see pushEstimateAndUpdateModes()).
+            pushEstimateAndUpdateModes({ p.x, p.y, p.z });
+        }
     }
 
     void SixDofMaskProcessor::pushEstimateAndUpdateModes(const SixDofSourcePosition& estimate)
@@ -752,14 +847,12 @@ namespace AT
         m_historyCount = std::min(m_historyCount + 1, HISTORY_SIZE);
 
         // Mode search (histogram on a grid_res-rounded position) over the
-        // rolling history — direct port of the mode-detection logic in
-        // apply_mask.py's localize_sources(): genuine dominant sources
-        // repeat almost exactly from window to window, while windows with
-        // several simultaneously-active sources produce scattered
-        // "compromise" positions that (almost) never repeat. Counting
-        // occurrences therefore separates signal from that specific kind of
-        // noise far more robustly than proximity-based clustering (k-means)
-        // — validated in the Python prototype, see 6dof-nav skill.
+        // rolling history — genuine dominant sources repeat almost exactly
+        // from window to window, while spurious pseudo-spectrum peaks
+        // (reverberation, finite-snapshot estimation noise) scatter and
+        // rarely repeat. Counting occurrences therefore separates signal
+        // from that specific kind of noise far more robustly than
+        // proximity-based clustering (k-means).
         const float gridRes = m_gridRes.load(std::memory_order_relaxed);
         const int   minCount = m_minBlockCount.load(std::memory_order_relaxed);
 

@@ -392,8 +392,10 @@ EXPORT_API int CALL_CONV AT_WS_getPlayerSpeakerMask(int uid, float* speakerMask,
 // Listener-position-dependent per-channel gain for 2D players whose N
 // channels match the current virtual speaker rig (e.g. a ring/sphere
 // capture) — enables free 6DOF listener navigation inside the captured
-// scene without moving the actual source content. See AT_SixDofMaskProcessor
-// and the 6dof-nav skill for the full algorithm and validation history.
+// scene without moving the actual source content. Localization is done by
+// MUSIC (Schmidt 1986, eigendecomposition of the per-band spatial
+// covariance) — see AT_SixDofMaskProcessor and the 6dof-nav skill for the
+// full algorithm and validation history.
 // ============================================================================
 
 /**
@@ -409,10 +411,23 @@ EXPORT_API int CALL_CONV AT_WS_getPlayerSpeakerMask(int uid, float* speakerMask,
 EXPORT_API int CALL_CONV AT_WS_setPlayer6dofMaskEnabled(int uid, bool isEnabled);
 
 /**
- * @brief Sets the grid resolution (metres) used by the 6DOF mode-detection
- *        histogram. Default 0.02 (validated on the clean synthetic corpus —
- *        see 6dof-nav skill); real/reverberant recordings typically need a
- *        coarser value (0.1-0.3).
+ * @brief Sets the number of sources the MUSIC signal subspace is sized for,
+ *        and the maximum number of pseudo-spectrum peaks searched per
+ *        analysis window. Generous values cost little (validated:
+ *        negligible timing impact) — the true source count is resolved
+ *        downstream by the temporal mode/hysteresis history, not by tuning
+ *        this precisely. Default 3.
+ * @param uid         Unique identifier of the player
+ * @param maxSources  Source count / peak search cap (1-6)
+ */
+EXPORT_API int CALL_CONV AT_WS_setPlayer6dofMaxSources(int uid, int maxSources);
+
+/**
+ * @brief Sets the grid resolution (metres) used by the 6DOF TEMPORAL
+ *        mode-detection histogram (groups repeated position estimates
+ *        across successive analysis windows) — distinct from the MUSIC
+ *        spatial search grid, see AT_WS_setPlayer6dofSearchGridResolution().
+ *        Default 0.5, matching the default search grid resolution.
  * @param uid      Unique identifier of the player
  * @param gridRes  Grid resolution in metres (> 0)
  */
@@ -421,7 +436,7 @@ EXPORT_API int CALL_CONV AT_WS_setPlayer6dofGridRes(int uid, float gridRes);
 /**
  * @brief Sets the minimum number of matching estimates (within the rolling
  *        localization history) required for a position to be accepted as a
- *        real source. Default 4 (synthetic corpus).
+ *        real source. Default 4.
  * @param uid            Unique identifier of the player
  * @param minBlockCount  Minimum match count (>= 1)
  */
@@ -429,13 +444,64 @@ EXPORT_API int CALL_CONV AT_WS_setPlayer6dofMinBlockCount(int uid, int minBlockC
 
 /**
  * @brief Sets the number of audio callback blocks accumulated into one 6DOF
- *        localization analysis window. 1 = lowest latency (try this first —
- *        one block up to 4096 samples @ 48 kHz is ~85 ms). Increase if
- *        GCC-PHAT proves unreliable on windows that short.
+ *        localization analysis window. Must be large enough to yield several
+ *        STFT snapshots per analyzed frequency band for a numerically
+ *        well-behaved covariance estimate. Default 8.
  * @param uid               Unique identifier of the player
- * @param numBufferedBlocks Number of blocks (1-16)
+ * @param numBufferedBlocks Number of blocks (1-32)
  */
 EXPORT_API int CALL_CONV AT_WS_setPlayer6dofNumBufferedBlocks(int uid, int numBufferedBlocks);
+
+/**
+ * @brief Sets the spatial resolution (metres) of the MUSIC candidate-position
+ *        search grid. Dominant cost lever — cost scales ~1/resolution^2.
+ *        Default 0.5.
+ * @param uid                    Unique identifier of the player
+ * @param searchGridResolution   Grid spacing in metres (> 0)
+ */
+EXPORT_API int CALL_CONV AT_WS_setPlayer6dofSearchGridResolution(int uid, float searchGridResolution);
+
+/**
+ * @brief Sets the number of frequency bands combined ("incoherent
+ *        combination") per analysis window, spread linearly across
+ *        [bandHzMin, bandHzMax]. Cost scales ~linearly with this value.
+ *        Default 8.
+ * @param uid       Unique identifier of the player
+ * @param maxBins   Number of bands (1-64)
+ */
+EXPORT_API int CALL_CONV AT_WS_setPlayer6dofMaxBins(int uid, int maxBins);
+
+/**
+ * @brief Sets the lower bound (Hz) of the frequency range analyzed by
+ *        MUSIC. Default 400.
+ * @param uid        Unique identifier of the player
+ * @param bandHzMin  Lower bound in Hz (>= 0)
+ */
+EXPORT_API int CALL_CONV AT_WS_setPlayer6dofBandHzMin(int uid, float bandHzMin);
+
+/**
+ * @brief Sets the upper bound (Hz) of the frequency range analyzed by
+ *        MUSIC. Default 4000.
+ * @param uid        Unique identifier of the player
+ * @param bandHzMax  Upper bound in Hz (> bandHzMin)
+ */
+EXPORT_API int CALL_CONV AT_WS_setPlayer6dofBandHzMax(int uid, float bandHzMax);
+
+/**
+ * @brief Sets the lower bound (metres) of the height range swept by the
+ *        MUSIC search grid. Default -1.
+ * @param uid        Unique identifier of the player
+ * @param yRangeMin  Lower height bound in metres
+ */
+EXPORT_API int CALL_CONV AT_WS_setPlayer6dofYRangeMin(int uid, float yRangeMin);
+
+/**
+ * @brief Sets the upper bound (metres) of the height range swept by the
+ *        MUSIC search grid. Default 2.
+ * @param uid        Unique identifier of the player
+ * @param yRangeMax  Upper height bound in metres
+ */
+EXPORT_API int CALL_CONV AT_WS_setPlayer6dofYRangeMax(int uid, float yRangeMax);
 
 /**
  * @brief Retrieves the number of sources currently detected by 6DOF masking

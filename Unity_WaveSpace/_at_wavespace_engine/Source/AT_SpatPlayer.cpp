@@ -902,6 +902,17 @@ namespace AT
         m_is6dofMaskPrepared = true;
     }
 
+    void SpatPlayer::set6dofMaxSources(int maxSources)
+    {
+        if (m_puSixDofMask != nullptr)
+            m_puSixDofMask->setMaxSources(maxSources);
+    }
+
+    int SpatPlayer::get6dofMaxSources() const
+    {
+        return m_puSixDofMask != nullptr ? m_puSixDofMask->getMaxSources() : 3;
+    }
+
     void SpatPlayer::set6dofGridRes(float gridRes)
     {
         if (m_puSixDofMask != nullptr)
@@ -910,7 +921,7 @@ namespace AT
 
     float SpatPlayer::get6dofGridRes() const
     {
-        return m_puSixDofMask != nullptr ? m_puSixDofMask->getGridRes() : 0.02f;
+        return m_puSixDofMask != nullptr ? m_puSixDofMask->getGridRes() : 0.5f;
     }
 
     void SpatPlayer::set6dofMinBlockCount(int minBlockCount)
@@ -932,7 +943,73 @@ namespace AT
 
     int SpatPlayer::get6dofNumBufferedBlocks() const
     {
-        return m_puSixDofMask != nullptr ? m_puSixDofMask->getNumBufferedBlocks() : 1;
+        return m_puSixDofMask != nullptr ? m_puSixDofMask->getNumBufferedBlocks() : 8;
+    }
+
+    void SpatPlayer::set6dofSearchGridResolution(float searchGridResolution)
+    {
+        if (m_puSixDofMask != nullptr)
+            m_puSixDofMask->setSearchGridResolution(searchGridResolution);
+    }
+
+    float SpatPlayer::get6dofSearchGridResolution() const
+    {
+        return m_puSixDofMask != nullptr ? m_puSixDofMask->getSearchGridResolution() : 0.5f;
+    }
+
+    void SpatPlayer::set6dofMaxBins(int maxBins)
+    {
+        if (m_puSixDofMask != nullptr)
+            m_puSixDofMask->setMaxBins(maxBins);
+    }
+
+    int SpatPlayer::get6dofMaxBins() const
+    {
+        return m_puSixDofMask != nullptr ? m_puSixDofMask->getMaxBins() : 8;
+    }
+
+    void SpatPlayer::set6dofBandHzMin(float bandHzMin)
+    {
+        if (m_puSixDofMask != nullptr)
+            m_puSixDofMask->setBandHzMin(bandHzMin);
+    }
+
+    float SpatPlayer::get6dofBandHzMin() const
+    {
+        return m_puSixDofMask != nullptr ? m_puSixDofMask->getBandHzMin() : 400.0f;
+    }
+
+    void SpatPlayer::set6dofBandHzMax(float bandHzMax)
+    {
+        if (m_puSixDofMask != nullptr)
+            m_puSixDofMask->setBandHzMax(bandHzMax);
+    }
+
+    float SpatPlayer::get6dofBandHzMax() const
+    {
+        return m_puSixDofMask != nullptr ? m_puSixDofMask->getBandHzMax() : 4000.0f;
+    }
+
+    void SpatPlayer::set6dofYRangeMin(float yRangeMin)
+    {
+        if (m_puSixDofMask != nullptr)
+            m_puSixDofMask->setYRangeMin(yRangeMin);
+    }
+
+    float SpatPlayer::get6dofYRangeMin() const
+    {
+        return m_puSixDofMask != nullptr ? m_puSixDofMask->getYRangeMin() : -1.0f;
+    }
+
+    void SpatPlayer::set6dofYRangeMax(float yRangeMax)
+    {
+        if (m_puSixDofMask != nullptr)
+            m_puSixDofMask->setYRangeMax(yRangeMax);
+    }
+
+    float SpatPlayer::get6dofYRangeMax() const
+    {
+        return m_puSixDofMask != nullptr ? m_puSixDofMask->getYRangeMax() : 2.0f;
     }
 
     int SpatPlayer::get6dofNumDetectedSources() const

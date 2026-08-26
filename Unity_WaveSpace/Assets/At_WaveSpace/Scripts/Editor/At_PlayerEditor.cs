@@ -61,6 +61,13 @@ public class At_PlayerEditor : Editor
     private SerializedProperty sp_sixDofGridRes;
     private SerializedProperty sp_sixDofMinBlockCount;
     private SerializedProperty sp_sixDofNumBufferedBlocks;
+    private SerializedProperty sp_sixDofMaxSources;
+    private SerializedProperty sp_sixDofSearchGridResolution;
+    private SerializedProperty sp_sixDofMaxBins;
+    private SerializedProperty sp_sixDofBandHzMin;
+    private SerializedProperty sp_sixDofBandHzMax;
+    private SerializedProperty sp_sixDofYRangeMin;
+    private SerializedProperty sp_sixDofYRangeMax;
     #endregion
 
     #region Initialization
@@ -87,6 +94,13 @@ public class At_PlayerEditor : Editor
         sp_sixDofGridRes         = serializedObject.FindProperty("sixDofGridRes");
         sp_sixDofMinBlockCount   = serializedObject.FindProperty("sixDofMinBlockCount");
         sp_sixDofNumBufferedBlocks = serializedObject.FindProperty("sixDofNumBufferedBlocks");
+        sp_sixDofMaxSources      = serializedObject.FindProperty("sixDofMaxSources");
+        sp_sixDofSearchGridResolution = serializedObject.FindProperty("sixDofSearchGridResolution");
+        sp_sixDofMaxBins         = serializedObject.FindProperty("sixDofMaxBins");
+        sp_sixDofBandHzMin       = serializedObject.FindProperty("sixDofBandHzMin");
+        sp_sixDofBandHzMax       = serializedObject.FindProperty("sixDofBandHzMax");
+        sp_sixDofYRangeMin       = serializedObject.FindProperty("sixDofYRangeMin");
+        sp_sixDofYRangeMax       = serializedObject.FindProperty("sixDofYRangeMax");
 
         previousIsEditor  = Application.isEditor;
         previousIsPlaying = Application.isPlaying;
@@ -122,9 +136,16 @@ public class At_PlayerEditor : Editor
             playerState.lowPassBypass          = true;
             playerState.highPassBypass         = false;
             playerState.is6dofMaskEnabled      = false;
-            playerState.sixDofGridRes          = 0.02f;
+            playerState.sixDofGridRes          = 0.5f;
             playerState.sixDofMinBlockCount    = 4;
-            playerState.sixDofNumBufferedBlocks = 1;
+            playerState.sixDofNumBufferedBlocks = 8;
+            playerState.sixDofMaxSources       = 3;
+            playerState.sixDofSearchGridResolution = 0.5f;
+            playerState.sixDofMaxBins          = 8;
+            playerState.sixDofBandHzMin        = 400.0f;
+            playerState.sixDofBandHzMax        = 4000.0f;
+            playerState.sixDofYRangeMin        = -1.0f;
+            playerState.sixDofYRangeMax        = 2.0f;
         }
 
         LoadParametersFromState();
@@ -423,7 +444,7 @@ public class At_PlayerEditor : Editor
         HorizontalLine(Color.black);
         GUILayout.Space(5);
 
-        GUILayout.Label("6DOF Source Masking", EditorStyles.boldLabel);
+        GUILayout.Label("6DOF Source Masking (MUSIC)", EditorStyles.boldLabel);
 
         EditorGUILayout.BeginHorizontal();
         GUILayout.Label("Enabled", GUILayout.Width(150));
@@ -438,6 +459,116 @@ public class At_PlayerEditor : Editor
         }
 
         GUILayout.Space(5);
+        GUILayout.Label("Localization (MUSIC)", EditorStyles.miniBoldLabel);
+
+        EditorGUILayout.BeginHorizontal();
+        GUILayout.Label("Max Sources", GUILayout.Width(150));
+        string maxSrcStr = EditorGUILayout.TextField(playerState.sixDofMaxSources.ToString(), GUILayout.Width(60));
+        if (int.TryParse(maxSrcStr, out int pms))
+        {
+            pms = Mathf.Clamp(pms, 1, 6);
+            if (pms != playerState.sixDofMaxSources) { playerState.sixDofMaxSources = pms; shouldSave = true; }
+        }
+        EditorGUILayout.EndHorizontal();
+        EditorGUILayout.HelpBox(
+            "Signal-subspace size / pseudo-spectrum peaks searched per window. Generous values " +
+            "cost little — the true source count is resolved over time by Min Block Count below, " +
+            "not by tuning this precisely.",
+            MessageType.None);
+
+        GUILayout.Space(5);
+
+        EditorGUILayout.BeginHorizontal();
+        GUILayout.Label("Search Grid Res. (m)", GUILayout.Width(150));
+        string searchGridStr = EditorGUILayout.TextField(playerState.sixDofSearchGridResolution.ToString("F3"), GUILayout.Width(60));
+        if (float.TryParse(searchGridStr,
+                System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out float psg))
+        {
+            psg = Mathf.Clamp(psg, 0.01f, 2f);
+            if (!Mathf.Approximately(psg, playerState.sixDofSearchGridResolution)) { playerState.sixDofSearchGridResolution = psg; shouldSave = true; }
+        }
+        EditorGUILayout.EndHorizontal();
+        EditorGUILayout.HelpBox(
+            "Spatial resolution of the MUSIC candidate-position grid. Dominant cost lever " +
+            "(cost scales ~1/resolution^2) — coarser than the 0.3 m masking transition buys " +
+            "little accuracy.",
+            MessageType.None);
+
+        GUILayout.Space(5);
+
+        EditorGUILayout.BeginHorizontal();
+        GUILayout.Label("Max Bins", GUILayout.Width(150));
+        string maxBinsStr = EditorGUILayout.TextField(playerState.sixDofMaxBins.ToString(), GUILayout.Width(60));
+        if (int.TryParse(maxBinsStr, out int pmb))
+        {
+            pmb = Mathf.Clamp(pmb, 1, 64);
+            if (pmb != playerState.sixDofMaxBins) { playerState.sixDofMaxBins = pmb; shouldSave = true; }
+        }
+        EditorGUILayout.EndHorizontal();
+        EditorGUILayout.HelpBox(
+            "Number of frequency bands combined (\"incoherent combination\") per window. Cost " +
+            "scales ~linearly with this value.",
+            MessageType.None);
+
+        GUILayout.Space(5);
+
+        EditorGUILayout.BeginHorizontal();
+        GUILayout.Label("Band Hz Min / Max", GUILayout.Width(150));
+        string bandMinStr = EditorGUILayout.TextField(playerState.sixDofBandHzMin.ToString("F0"), GUILayout.Width(60));
+        string bandMaxStr = EditorGUILayout.TextField(playerState.sixDofBandHzMax.ToString("F0"), GUILayout.Width(60));
+        if (float.TryParse(bandMinStr,
+                System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out float pbmin))
+        {
+            pbmin = Mathf.Clamp(pbmin, 0f, 20000f);
+            if (!Mathf.Approximately(pbmin, playerState.sixDofBandHzMin)) { playerState.sixDofBandHzMin = pbmin; shouldSave = true; }
+        }
+        if (float.TryParse(bandMaxStr,
+                System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out float pbmax))
+        {
+            pbmax = Mathf.Clamp(pbmax, playerState.sixDofBandHzMin + 1f, 24000f);
+            if (!Mathf.Approximately(pbmax, playerState.sixDofBandHzMax)) { playerState.sixDofBandHzMax = pbmax; shouldSave = true; }
+        }
+        EditorGUILayout.EndHorizontal();
+        EditorGUILayout.HelpBox(
+            "Frequency range analyzed by MUSIC. Analyzing above the array's spatial-aliasing " +
+            "frequency is fine (frequency diversity across bands resolves it) — see the 6dof-nav " +
+            "skill for the validation.",
+            MessageType.None);
+
+        GUILayout.Space(5);
+
+        EditorGUILayout.BeginHorizontal();
+        GUILayout.Label("Y Range Min / Max (m)", GUILayout.Width(150));
+        string yMinStr = EditorGUILayout.TextField(playerState.sixDofYRangeMin.ToString("F2"), GUILayout.Width(60));
+        string yMaxStr = EditorGUILayout.TextField(playerState.sixDofYRangeMax.ToString("F2"), GUILayout.Width(60));
+        if (float.TryParse(yMinStr,
+                System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out float pymin))
+        {
+            if (!Mathf.Approximately(pymin, playerState.sixDofYRangeMin)) { playerState.sixDofYRangeMin = pymin; shouldSave = true; }
+        }
+        if (float.TryParse(yMaxStr,
+                System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out float pymax))
+        {
+            pymax = Mathf.Max(pymax, playerState.sixDofYRangeMin + 0.01f);
+            if (!Mathf.Approximately(pymax, playerState.sixDofYRangeMax)) { playerState.sixDofYRangeMax = pymax; shouldSave = true; }
+        }
+        EditorGUILayout.EndHorizontal();
+        EditorGUILayout.HelpBox(
+            "Height range swept by the MUSIC search grid.",
+            MessageType.None);
+
+        GUILayout.Space(5);
+        GUILayout.Label("Temporal confirmation (history)", EditorStyles.miniBoldLabel);
 
         EditorGUILayout.BeginHorizontal();
         GUILayout.Label("Grid Resolution (m)", GUILayout.Width(150));
@@ -452,8 +583,9 @@ public class At_PlayerEditor : Editor
         }
         EditorGUILayout.EndHorizontal();
         EditorGUILayout.HelpBox(
-            "Rounding resolution for source mode-detection. 0.02 is validated on clean " +
-            "synthetic material — real/reverberant recordings typically need 0.1-0.3.",
+            "Rounding resolution for the TEMPORAL mode-detection history (across successive " +
+            "windows) — distinct from Search Grid Resolution above. Default 0.5 matches the " +
+            "default search grid so repeated detections bucket together cleanly.",
             MessageType.None);
 
         GUILayout.Space(5);
@@ -475,13 +607,14 @@ public class At_PlayerEditor : Editor
         string numBufStr = EditorGUILayout.TextField(playerState.sixDofNumBufferedBlocks.ToString(), GUILayout.Width(60));
         if (int.TryParse(numBufStr, out int pnb))
         {
-            pnb = Mathf.Clamp(pnb, 1, 16);
+            pnb = Mathf.Clamp(pnb, 1, 32);
             if (pnb != playerState.sixDofNumBufferedBlocks) { playerState.sixDofNumBufferedBlocks = pnb; shouldSave = true; }
         }
         EditorGUILayout.EndHorizontal();
         EditorGUILayout.HelpBox(
-            "Audio blocks accumulated per localization analysis window. 1 = lowest latency " +
-            "(one block up to 4096 samples @ 48 kHz is ~85 ms) — try this first.",
+            "Audio blocks accumulated per localization analysis window. Must be large enough for " +
+            "several STFT snapshots per analyzed band — MUSIC needs more than GCC-PHAT used to " +
+            "(default 8, not 1) for a numerically well-behaved covariance estimate.",
             MessageType.None);
 
         if (player.isPlaying)
@@ -518,6 +651,13 @@ public class At_PlayerEditor : Editor
         player.sixDofGridRes          = playerState.sixDofGridRes;
         player.sixDofMinBlockCount    = playerState.sixDofMinBlockCount;
         player.sixDofNumBufferedBlocks = playerState.sixDofNumBufferedBlocks;
+        player.sixDofMaxSources       = playerState.sixDofMaxSources;
+        player.sixDofSearchGridResolution = playerState.sixDofSearchGridResolution;
+        player.sixDofMaxBins          = playerState.sixDofMaxBins;
+        player.sixDofBandHzMin        = playerState.sixDofBandHzMin;
+        player.sixDofBandHzMax        = playerState.sixDofBandHzMax;
+        player.sixDofYRangeMin        = playerState.sixDofYRangeMin;
+        player.sixDofYRangeMax        = playerState.sixDofYRangeMax;
     }
 
     /// <summary>
@@ -556,6 +696,13 @@ public class At_PlayerEditor : Editor
         Sync(ref player.sixDofGridRes,          playerState.sixDofGridRes);
         Sync(ref player.sixDofMinBlockCount,    playerState.sixDofMinBlockCount);
         Sync(ref player.sixDofNumBufferedBlocks, playerState.sixDofNumBufferedBlocks);
+        Sync(ref player.sixDofMaxSources,       playerState.sixDofMaxSources);
+        Sync(ref player.sixDofSearchGridResolution, playerState.sixDofSearchGridResolution);
+        Sync(ref player.sixDofMaxBins,          playerState.sixDofMaxBins);
+        Sync(ref player.sixDofBandHzMin,        playerState.sixDofBandHzMin);
+        Sync(ref player.sixDofBandHzMax,        playerState.sixDofBandHzMax);
+        Sync(ref player.sixDofYRangeMin,        playerState.sixDofYRangeMin);
+        Sync(ref player.sixDofYRangeMax,        playerState.sixDofYRangeMax);
 
         if (!changed) return;
 
@@ -579,6 +726,13 @@ public class At_PlayerEditor : Editor
         sp_sixDofGridRes.floatValue          = playerState.sixDofGridRes;
         sp_sixDofMinBlockCount.intValue      = playerState.sixDofMinBlockCount;
         sp_sixDofNumBufferedBlocks.intValue  = playerState.sixDofNumBufferedBlocks;
+        sp_sixDofMaxSources.intValue         = playerState.sixDofMaxSources;
+        sp_sixDofSearchGridResolution.floatValue = playerState.sixDofSearchGridResolution;
+        sp_sixDofMaxBins.intValue            = playerState.sixDofMaxBins;
+        sp_sixDofBandHzMin.floatValue        = playerState.sixDofBandHzMin;
+        sp_sixDofBandHzMax.floatValue        = playerState.sixDofBandHzMax;
+        sp_sixDofYRangeMin.floatValue        = playerState.sixDofYRangeMin;
+        sp_sixDofYRangeMax.floatValue        = playerState.sixDofYRangeMax;
         serializedObject.ApplyModifiedProperties();
     }
     #endregion

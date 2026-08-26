@@ -255,7 +255,14 @@ namespace AT
         void setIs6dofMaskEnabled(bool isEnabled);
         bool getIs6dofMaskEnabled() const;
 
-        /// Grid resolution (metres) for the 6DOF mode-detection histogram. Thread-safe.
+        /// Number of sources the MUSIC signal subspace is sized for / peak
+        /// search cap. Thread-safe.
+        void set6dofMaxSources(int maxSources);
+        int get6dofMaxSources() const;
+
+        /// Grid resolution (metres) for the 6DOF TEMPORAL mode-detection
+        /// histogram — distinct from the MUSIC spatial search grid, see
+        /// set6dofSearchGridResolution(). Thread-safe.
         void set6dofGridRes(float gridRes);
         float get6dofGridRes() const;
 
@@ -266,6 +273,30 @@ namespace AT
         /// Number of audio blocks buffered into one 6DOF localization analysis window. Thread-safe.
         void set6dofNumBufferedBlocks(int numBufferedBlocks);
         int get6dofNumBufferedBlocks() const;
+
+        /// Spatial resolution (metres) of the MUSIC candidate-position search grid. Thread-safe.
+        void set6dofSearchGridResolution(float searchGridResolution);
+        float get6dofSearchGridResolution() const;
+
+        /// Number of frequency bands combined per MUSIC analysis window. Thread-safe.
+        void set6dofMaxBins(int maxBins);
+        int get6dofMaxBins() const;
+
+        /// Lower bound (Hz) of the frequency range analyzed by MUSIC. Thread-safe.
+        void set6dofBandHzMin(float bandHzMin);
+        float get6dofBandHzMin() const;
+
+        /// Upper bound (Hz) of the frequency range analyzed by MUSIC. Thread-safe.
+        void set6dofBandHzMax(float bandHzMax);
+        float get6dofBandHzMax() const;
+
+        /// Lower bound (metres) of the height range swept by the MUSIC search grid. Thread-safe.
+        void set6dofYRangeMin(float yRangeMin);
+        float get6dofYRangeMin() const;
+
+        /// Upper bound (metres) of the height range swept by the MUSIC search grid. Thread-safe.
+        void set6dofYRangeMax(float yRangeMax);
+        float get6dofYRangeMax() const;
 
         /**
          * @brief Feeds the 6DOF mask processor with the array geometry it needs

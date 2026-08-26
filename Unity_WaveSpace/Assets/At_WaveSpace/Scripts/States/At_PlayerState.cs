@@ -3,6 +3,7 @@
 
 using UnityEngine;
 
+[System.Serializable]
 public class At_PlayerState
 {
     /// <summary>Player type identifier (reserved for future use).</summary>
@@ -70,22 +71,64 @@ public class At_PlayerState
     public bool is6dofMaskEnabled = false;
 
     /// <summary>
-    /// Grid resolution (metres) for 6DOF source mode-detection. Default 0.02,
-    /// validated on the clean synthetic FocalSources corpus — real/reverberant
-    /// recordings typically need a coarser value (0.1-0.3).
+    /// Grid resolution (metres) for the 6DOF TEMPORAL mode-detection
+    /// histogram (groups repeated position estimates across successive
+    /// analysis windows) — distinct from the MUSIC spatial search grid, see
+    /// sixDofSearchGridResolution. Default 0.5, matching the default search
+    /// grid resolution so repeated detections of the same physical source
+    /// (always snapped to the nearest search-grid point) bucket together
+    /// cleanly.
     /// </summary>
-    public float sixDofGridRes = 0.02f;
+    public float sixDofGridRes = 0.5f;
 
     /// <summary>
     /// Minimum number of matching position estimates (within the rolling
-    /// localization history) for a 6DOF source to be accepted. Default 4
-    /// (synthetic corpus).
+    /// localization history) for a 6DOF source to be accepted. Default 4.
     /// </summary>
     public int sixDofMinBlockCount = 4;
 
     /// <summary>
     /// Number of audio callback blocks accumulated into one 6DOF localization
-    /// analysis window. 1 = lowest latency (default, try first).
+    /// analysis window. Must be large enough to yield several STFT snapshots
+    /// per analyzed frequency band for a numerically well-behaved covariance
+    /// estimate. Default 8 (not 1 — MUSIC needs more than one small callback
+    /// block's worth of samples, unlike the previous GCC-PHAT implementation).
     /// </summary>
-    public int sixDofNumBufferedBlocks = 1;
+    public int sixDofNumBufferedBlocks = 8;
+
+    /// <summary>
+    /// Number of sources the MUSIC signal subspace is sized for, and the
+    /// maximum number of pseudo-spectrum peaks searched per analysis window.
+    /// Generous values cost little (validated: negligible timing impact) —
+    /// the true source count is resolved downstream by the temporal
+    /// mode/hysteresis history above, not by tuning this precisely.
+    /// Default 3.
+    /// </summary>
+    public int sixDofMaxSources = 3;
+
+    /// <summary>
+    /// Spatial resolution (metres) of the MUSIC candidate-position search
+    /// grid. Dominant cost lever — cost scales ~1/resolution^2; coarser than
+    /// the masking transition width (0.3 m) buys little accuracy. Default 0.5.
+    /// </summary>
+    public float sixDofSearchGridResolution = 0.5f;
+
+    /// <summary>
+    /// Number of frequency bands combined ("incoherent combination") per
+    /// analysis window, spread linearly across [sixDofBandHzMin, sixDofBandHzMax].
+    /// Cost scales ~linearly with this value. Default 8.
+    /// </summary>
+    public int sixDofMaxBins = 8;
+
+    /// <summary>Lower bound (Hz) of the frequency range analyzed by MUSIC. Default 400.</summary>
+    public float sixDofBandHzMin = 400.0f;
+
+    /// <summary>Upper bound (Hz) of the frequency range analyzed by MUSIC. Default 4000.</summary>
+    public float sixDofBandHzMax = 4000.0f;
+
+    /// <summary>Lower bound (metres) of the height range swept by the MUSIC search grid. Default -1.</summary>
+    public float sixDofYRangeMin = -1.0f;
+
+    /// <summary>Upper bound (metres) of the height range swept by the MUSIC search grid. Default 2.</summary>
+    public float sixDofYRangeMax = 2.0f;
 }

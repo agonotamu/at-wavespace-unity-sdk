@@ -86,7 +86,7 @@ public class At_Player : MonoBehaviour
     /// </summary>
     public bool is6dofMaskEnabled;
 
-    /// <summary>Grid resolution (metres) for 6DOF source mode-detection.</summary>
+    /// <summary>Grid resolution (metres) for 6DOF source mode-detection (temporal history, not the MUSIC spatial search grid).</summary>
     public float sixDofGridRes;
 
     /// <summary>Minimum matching-estimate count for a 6DOF source to be accepted.</summary>
@@ -94,6 +94,27 @@ public class At_Player : MonoBehaviour
 
     /// <summary>Number of audio blocks buffered into one 6DOF localization window.</summary>
     public int sixDofNumBufferedBlocks;
+
+    /// <summary>Number of sources the MUSIC signal subspace is sized for / peak search cap.</summary>
+    public int sixDofMaxSources;
+
+    /// <summary>Spatial resolution (metres) of the MUSIC candidate-position search grid.</summary>
+    public float sixDofSearchGridResolution;
+
+    /// <summary>Number of frequency bands combined per MUSIC analysis window.</summary>
+    public int sixDofMaxBins;
+
+    /// <summary>Lower bound (Hz) of the frequency range analyzed by MUSIC.</summary>
+    public float sixDofBandHzMin;
+
+    /// <summary>Upper bound (Hz) of the frequency range analyzed by MUSIC.</summary>
+    public float sixDofBandHzMax;
+
+    /// <summary>Lower bound (metres) of the height range swept by the MUSIC search grid.</summary>
+    public float sixDofYRangeMin;
+
+    /// <summary>Upper bound (metres) of the height range swept by the MUSIC search grid.</summary>
+    public float sixDofYRangeMax;
     #endregion
 
     #region Public Variables — 6DOF Detected Sources (Runtime State)
@@ -338,6 +359,13 @@ public class At_Player : MonoBehaviour
             sixDofGridRes          = playerState.sixDofGridRes;
             sixDofMinBlockCount    = playerState.sixDofMinBlockCount;
             sixDofNumBufferedBlocks = playerState.sixDofNumBufferedBlocks;
+            sixDofMaxSources       = playerState.sixDofMaxSources;
+            sixDofSearchGridResolution = playerState.sixDofSearchGridResolution;
+            sixDofMaxBins          = playerState.sixDofMaxBins;
+            sixDofBandHzMin        = playerState.sixDofBandHzMin;
+            sixDofBandHzMax        = playerState.sixDofBandHzMax;
+            sixDofYRangeMin        = playerState.sixDofYRangeMin;
+            sixDofYRangeMax        = playerState.sixDofYRangeMax;
         }
 
         // Fallback: read the audio file metadata if serialized data are not valid.
@@ -424,13 +452,20 @@ public class At_Player : MonoBehaviour
     private float m_last6dofGridRes;
     private int   m_last6dofMinBlockCount;
     private int   m_last6dofNumBufferedBlocks;
+    private int   m_last6dofMaxSources;
+    private float m_last6dofSearchGridResolution;
+    private int   m_last6dofMaxBins;
+    private float m_last6dofBandHzMin;
+    private float m_last6dofBandHzMax;
+    private float m_last6dofYRangeMin;
+    private float m_last6dofYRangeMax;
     private bool  m_6dofParamsPushedOnce;
 
     /// <summary>
-    /// Pushes the current 6DOF masking parameters (enabled flag, gridRes,
-    /// minBlockCount, numBufferedBlocks) to the native player, but ONLY when
-    /// they actually changed since the last call — safe to call every
-    /// Update() without re-triggering native (re-)allocation each frame.
+    /// Pushes the current 6DOF masking parameters (enabled flag + all MUSIC
+    /// localization parameters) to the native player, but ONLY when they
+    /// actually changed since the last call — safe to call every Update()
+    /// without re-triggering native (re-)allocation each frame.
     /// </summary>
     public void Update6dofMaskParameters()
     {
@@ -438,7 +473,14 @@ public class At_Player : MonoBehaviour
             && m_last6dofEnabled == is6dofMaskEnabled
             && Mathf.Approximately(m_last6dofGridRes, sixDofGridRes)
             && m_last6dofMinBlockCount == sixDofMinBlockCount
-            && m_last6dofNumBufferedBlocks == sixDofNumBufferedBlocks;
+            && m_last6dofNumBufferedBlocks == sixDofNumBufferedBlocks
+            && m_last6dofMaxSources == sixDofMaxSources
+            && Mathf.Approximately(m_last6dofSearchGridResolution, sixDofSearchGridResolution)
+            && m_last6dofMaxBins == sixDofMaxBins
+            && Mathf.Approximately(m_last6dofBandHzMin, sixDofBandHzMin)
+            && Mathf.Approximately(m_last6dofBandHzMax, sixDofBandHzMax)
+            && Mathf.Approximately(m_last6dofYRangeMin, sixDofYRangeMin)
+            && Mathf.Approximately(m_last6dofYRangeMax, sixDofYRangeMax);
         if (unchanged) return;
 
         AT_WS_setPlayer6dofMaskEnabled(spatID, is6dofMaskEnabled);
@@ -447,13 +489,27 @@ public class At_Player : MonoBehaviour
             AT_WS_setPlayer6dofGridRes(spatID, sixDofGridRes);
             AT_WS_setPlayer6dofMinBlockCount(spatID, sixDofMinBlockCount);
             AT_WS_setPlayer6dofNumBufferedBlocks(spatID, sixDofNumBufferedBlocks);
+            AT_WS_setPlayer6dofMaxSources(spatID, sixDofMaxSources);
+            AT_WS_setPlayer6dofSearchGridResolution(spatID, sixDofSearchGridResolution);
+            AT_WS_setPlayer6dofMaxBins(spatID, sixDofMaxBins);
+            AT_WS_setPlayer6dofBandHzMin(spatID, sixDofBandHzMin);
+            AT_WS_setPlayer6dofBandHzMax(spatID, sixDofBandHzMax);
+            AT_WS_setPlayer6dofYRangeMin(spatID, sixDofYRangeMin);
+            AT_WS_setPlayer6dofYRangeMax(spatID, sixDofYRangeMax);
         }
 
-        m_last6dofEnabled           = is6dofMaskEnabled;
-        m_last6dofGridRes           = sixDofGridRes;
-        m_last6dofMinBlockCount     = sixDofMinBlockCount;
-        m_last6dofNumBufferedBlocks = sixDofNumBufferedBlocks;
-        m_6dofParamsPushedOnce      = true;
+        m_last6dofEnabled              = is6dofMaskEnabled;
+        m_last6dofGridRes              = sixDofGridRes;
+        m_last6dofMinBlockCount        = sixDofMinBlockCount;
+        m_last6dofNumBufferedBlocks    = sixDofNumBufferedBlocks;
+        m_last6dofMaxSources           = sixDofMaxSources;
+        m_last6dofSearchGridResolution = sixDofSearchGridResolution;
+        m_last6dofMaxBins              = sixDofMaxBins;
+        m_last6dofBandHzMin            = sixDofBandHzMin;
+        m_last6dofBandHzMax            = sixDofBandHzMax;
+        m_last6dofYRangeMin            = sixDofYRangeMin;
+        m_last6dofYRangeMax            = sixDofYRangeMax;
+        m_6dofParamsPushedOnce         = true;
     }
 
     /// <summary>
@@ -646,6 +702,13 @@ public class At_Player : MonoBehaviour
     [DllImport("at_wavespace_engine", CallingConvention = CallingConvention.StdCall)] private static extern int AT_WS_setPlayer6dofGridRes(int uid, float gridRes);
     [DllImport("at_wavespace_engine", CallingConvention = CallingConvention.StdCall)] private static extern int AT_WS_setPlayer6dofMinBlockCount(int uid, int minBlockCount);
     [DllImport("at_wavespace_engine", CallingConvention = CallingConvention.StdCall)] private static extern int AT_WS_setPlayer6dofNumBufferedBlocks(int uid, int numBufferedBlocks);
+    [DllImport("at_wavespace_engine", CallingConvention = CallingConvention.StdCall)] private static extern int AT_WS_setPlayer6dofMaxSources(int uid, int maxSources);
+    [DllImport("at_wavespace_engine", CallingConvention = CallingConvention.StdCall)] private static extern int AT_WS_setPlayer6dofSearchGridResolution(int uid, float searchGridResolution);
+    [DllImport("at_wavespace_engine", CallingConvention = CallingConvention.StdCall)] private static extern int AT_WS_setPlayer6dofMaxBins(int uid, int maxBins);
+    [DllImport("at_wavespace_engine", CallingConvention = CallingConvention.StdCall)] private static extern int AT_WS_setPlayer6dofBandHzMin(int uid, float bandHzMin);
+    [DllImport("at_wavespace_engine", CallingConvention = CallingConvention.StdCall)] private static extern int AT_WS_setPlayer6dofBandHzMax(int uid, float bandHzMax);
+    [DllImport("at_wavespace_engine", CallingConvention = CallingConvention.StdCall)] private static extern int AT_WS_setPlayer6dofYRangeMin(int uid, float yRangeMin);
+    [DllImport("at_wavespace_engine", CallingConvention = CallingConvention.StdCall)] private static extern int AT_WS_setPlayer6dofYRangeMax(int uid, float yRangeMax);
     [DllImport("at_wavespace_engine", CallingConvention = CallingConvention.StdCall)] private static extern int AT_WS_getPlayer6dofSourceCount(int uid, out int outCount);
     [DllImport("at_wavespace_engine", CallingConvention = CallingConvention.StdCall)] private static extern int AT_WS_getPlayer6dofSourcePositions(int uid, IntPtr positions, int arraySize);
     #endregion

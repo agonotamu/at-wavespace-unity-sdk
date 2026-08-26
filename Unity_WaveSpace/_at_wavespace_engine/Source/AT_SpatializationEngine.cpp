@@ -1855,6 +1855,18 @@ namespace AT
         }
     }
 
+    void SpatializationEngine::setPlayer6dofMaxSources(int uid, int maxSources)
+    {
+        for (auto& spatPlayer : m_spatPlayers)
+        {
+            if (spatPlayer && spatPlayer->getUID() == uid)
+            {
+                spatPlayer->set6dofMaxSources(maxSources);
+                break;
+            }
+        }
+    }
+
     void SpatializationEngine::setPlayer6dofGridRes(int uid, float gridRes)
     {
         for (auto& spatPlayer : m_spatPlayers)
@@ -1886,6 +1898,78 @@ namespace AT
             if (spatPlayer && spatPlayer->getUID() == uid)
             {
                 spatPlayer->set6dofNumBufferedBlocks(numBufferedBlocks);
+                break;
+            }
+        }
+    }
+
+    void SpatializationEngine::setPlayer6dofSearchGridResolution(int uid, float searchGridResolution)
+    {
+        for (auto& spatPlayer : m_spatPlayers)
+        {
+            if (spatPlayer && spatPlayer->getUID() == uid)
+            {
+                spatPlayer->set6dofSearchGridResolution(searchGridResolution);
+                break;
+            }
+        }
+    }
+
+    void SpatializationEngine::setPlayer6dofMaxBins(int uid, int maxBins)
+    {
+        for (auto& spatPlayer : m_spatPlayers)
+        {
+            if (spatPlayer && spatPlayer->getUID() == uid)
+            {
+                spatPlayer->set6dofMaxBins(maxBins);
+                break;
+            }
+        }
+    }
+
+    void SpatializationEngine::setPlayer6dofBandHzMin(int uid, float bandHzMin)
+    {
+        for (auto& spatPlayer : m_spatPlayers)
+        {
+            if (spatPlayer && spatPlayer->getUID() == uid)
+            {
+                spatPlayer->set6dofBandHzMin(bandHzMin);
+                break;
+            }
+        }
+    }
+
+    void SpatializationEngine::setPlayer6dofBandHzMax(int uid, float bandHzMax)
+    {
+        for (auto& spatPlayer : m_spatPlayers)
+        {
+            if (spatPlayer && spatPlayer->getUID() == uid)
+            {
+                spatPlayer->set6dofBandHzMax(bandHzMax);
+                break;
+            }
+        }
+    }
+
+    void SpatializationEngine::setPlayer6dofYRangeMin(int uid, float yRangeMin)
+    {
+        for (auto& spatPlayer : m_spatPlayers)
+        {
+            if (spatPlayer && spatPlayer->getUID() == uid)
+            {
+                spatPlayer->set6dofYRangeMin(yRangeMin);
+                break;
+            }
+        }
+    }
+
+    void SpatializationEngine::setPlayer6dofYRangeMax(int uid, float yRangeMax)
+    {
+        for (auto& spatPlayer : m_spatPlayers)
+        {
+            if (spatPlayer && spatPlayer->getUID() == uid)
+            {
+                spatPlayer->set6dofYRangeMax(yRangeMax);
                 break;
             }
         }

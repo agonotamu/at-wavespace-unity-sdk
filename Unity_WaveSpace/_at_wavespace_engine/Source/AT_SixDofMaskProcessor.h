@@ -8,18 +8,33 @@
  * @author Antoine Gonot / Claude
  * @date 2026
  *
- * Ported from the validated Python prototype (apply_mask.py, FocalSources
- * project):
- *   - Localization: GCC-PHAT (Knapp & Carter 1976) per channel vs a
- *     reference channel, + spherical interpolation (Smith & Abel 1987,
- *     closed-form TDOA multilateration) — no grid search, no
- *     eigendecomposition. DORT/MUSIC were evaluated and ruled out for
- *     real-time cost; see the 6dof-nav skill for the full comparison.
- *   - Multi-source detection: mode search (most frequent position) over a
- *     rolling history of single-window estimates, NOT k-means — validated
- *     as robust to "compromise" positions produced when several sources are
- *     simultaneously active in the same analysis window (those scatter and
- *     never repeat, unlike a genuinely dominant source's estimate).
+ * Ported from the validated Python prototype (apply_mask_MUSIC.py,
+ * FocalSources project):
+ *   - Localization: MUSIC (Schmidt 1986) — per retained frequency band,
+ *     eigendecomposition of the spatial covariance matrix splits a signal
+ *     subspace (top `maxSources` eigenvectors) from a noise subspace; a
+ *     candidate position's steering vector is (near-)orthogonal to the
+ *     noise subspace iff it is a real source. Positions are tested on a
+ *     regular spatial grid, combined ("incoherent combination") across
+ *     several frequency bands. Chosen over GCC-PHAT (the previous
+ *     implementation, removed) for robustness — MUSIC natively separates
+ *     several simultaneously-active sources within a SINGLE analysis
+ *     window, whereas GCC-PHAT needed many single-source-dominant windows
+ *     accumulated over time. Costs more per window (eigendecomposition is
+ *     O(mics^3) per band); mitigated by running on a background thread and
+ *     keeping mics/bins/grid-resolution within the ranges validated for
+ *     real-time use (see the 6dof-nav skill).
+ *   - Eigendecomposition: hand-rolled real-symmetric Jacobi eigenvalue
+ *     solver (no third-party linear algebra dependency), applied to the
+ *     standard real 2N×2N block-matrix embedding of a complex N×N
+ *     Hermitian matrix — see computeSignalSubspace()'s doc comment.
+ *   - Multi-source detection over time: SAME mode-search history/hysteresis
+ *     machinery as the previous GCC-PHAT implementation (pushEstimateAndUpdateModes,
+ *     TrackedCandidate) — MUSIC's per-window peaks feed the identical
+ *     rolling-history + temporal-confirmation pipeline, unchanged. A
+ *     genuine source still repeats close to the same grid position window
+ *     after window; a MUSIC pseudo-spectrum artifact (reverberation, finite-
+ *     snapshot estimation noise) typically does not.
  *   - Masking: per-channel gain from the "source must lie between listener
  *     and microphone" validity criterion, combined (max) across all
  *     detected sources. No source separation/extraction is performed —
@@ -27,8 +42,9 @@
  *     in the player's buffer, which is sufficient for navigation (as
  *     opposed to per-source isolation/export, out of scope here).
  *
- * Dependencies: JUCE only (juce::dsp::FFT for GCC-PHAT, std:: for threading
- * and containers). No third-party numerical libraries.
+ * Dependencies: JUCE only (juce::dsp::FFT for the per-frame STFT, std:: for
+ * threading/containers). No third-party numerical/linear-algebra library —
+ * see computeSignalSubspace() for the in-house eigensolver this implies.
  *
  * Real-time safety: prepare()/releaseResources() allocate and are NOT
  * real-time safe (call from the same non-audio thread/contract as
@@ -42,6 +58,7 @@
 #include <JuceHeader.h>
 #include <vector>
 #include <array>
+#include <complex>
 #include <mutex>
 #include <atomic>
 #include <thread>
@@ -64,7 +81,7 @@ namespace AT
      * One instance per SpatPlayer (2D mode only, created lazily when the
      * "6DOF Source Masking" option is enabled — mirrors the m_puSpatializer
      * lazy-construction pattern for 3D mode). Owns a background thread for
-     * localization (GCC-PHAT is too expensive to run on the audio thread);
+     * localization (MUSIC is far too expensive to run on the audio thread);
      * the audio thread only ever reads a small mutex-guarded result and
      * applies cheap per-channel gains via FloatVectorOperations.
      */
@@ -98,24 +115,75 @@ namespace AT
         void setEnabled(bool enabled);
         bool isEnabled() const { return m_enabled.load(std::memory_order_relaxed); }
 
-        /// Grid resolution (metres) for the mode-detection histogram.
-        /// Default 0.02 — validated on the clean synthetic corpus (first
-        /// FocalSources test set). Real, reverberant recordings typically
-        /// need a coarser value (0.1-0.3) — see 6dof-nav skill.
+        /// Number of sources the MUSIC signal subspace is sized for, and the
+        /// maximum number of pseudo-spectrum peaks searched per analysis
+        /// window. Generous by design: unlike GCC-PHAT's num-sources
+        /// parameter, this has negligible cost impact (validated: <32
+        /// dimensions difference in the noise-subspace projection cost is
+        /// noise-level in timing benchmarks) — the true source count is
+        /// resolved downstream by the SAME temporal mode/hysteresis
+        /// machinery as before (repeated peaks confirmed over time), not by
+        /// tuning this value precisely. Default 3, capped at MAX_SOURCES.
+        void setMaxSources(int maxSources);
+        int getMaxSources() const { return m_maxSources.load(std::memory_order_relaxed); }
+
+        /// Grid resolution (metres) for the TEMPORAL mode-detection
+        /// histogram (rounds successive window estimates to detect
+        /// repeated positions over time) — NOT the spatial MUSIC search
+        /// grid, see setSearchGridResolution() for that. Default 0.5,
+        /// matching the default search grid so repeated detections of the
+        /// same physical source (which MUSIC always snaps to the nearest
+        /// search-grid point) bucket together cleanly.
         void setGridRes(float gridRes);
         float getGridRes() const { return m_gridRes.load(std::memory_order_relaxed); }
 
         /// Minimum number of matching estimates in the rolling history for a
-        /// mode to be accepted as a real source. Default 4 (synthetic corpus).
+        /// mode to be accepted as a real source. Default 4.
         void setMinBlockCount(int minBlockCount);
         int getMinBlockCount() const { return m_minBlockCount.load(std::memory_order_relaxed); }
 
         /// Number of audio callback blocks accumulated into one localization
-        /// analysis window (1 = lowest latency; try this first — one block
-        /// up to 4096 samples @ 48 kHz is ~85 ms. Increase if GCC-PHAT proves
-        /// unreliable on windows that short on real/reverberant material).
+        /// analysis window. For MUSIC, this must be large enough to yield
+        /// several STFT snapshots per retained frequency band — the spatial
+        /// covariance estimate needs a comfortable snapshot count above the
+        /// channel count to be numerically well-behaved. Default 8 (not 1 —
+        /// unlike the previous GCC-PHAT implementation, a single small audio
+        /// callback block rarely contains enough STFT frames for a stable
+        /// covariance estimate).
         void setNumBufferedBlocks(int numBufferedBlocks);
         int getNumBufferedBlocks() const { return m_numBufferedBlocks.load(std::memory_order_relaxed); }
+
+        /// Spatial resolution (metres) of the MUSIC candidate-position
+        /// search grid. Dominant cost lever (validated: cost scales
+        /// ~linearly with grid point count, i.e. ~1/resolution^2) — coarser
+        /// than the masking transition width (0.3 m) buys little accuracy.
+        /// Default 0.5.
+        void setSearchGridResolution(float searchGridResolution);
+        float getSearchGridResolution() const { return m_searchGridResolution.load(std::memory_order_relaxed); }
+
+        /// Number of frequency bands combined ("incoherent combination")
+        /// per analysis window, spread linearly across [bandHzMin, bandHzMax].
+        /// Cost scales ~linearly with this value. Default 8.
+        void setMaxBins(int maxBins);
+        int getMaxBins() const { return m_maxBins.load(std::memory_order_relaxed); }
+
+        /// Lower bound (Hz) of the analyzed frequency range. Default 400.
+        void setBandHzMin(float bandHzMin);
+        float getBandHzMin() const { return m_bandHzMin.load(std::memory_order_relaxed); }
+
+        /// Upper bound (Hz) of the analyzed frequency range. Default 4000.
+        void setBandHzMax(float bandHzMax);
+        float getBandHzMax() const { return m_bandHzMax.load(std::memory_order_relaxed); }
+
+        /// Lower bound (metres) of the height range swept by the search
+        /// grid. Default -1.
+        void setYRangeMin(float yRangeMin);
+        float getYRangeMin() const { return m_yRangeMin.load(std::memory_order_relaxed); }
+
+        /// Upper bound (metres) of the height range swept by the search
+        /// grid. Default 2.
+        void setYRangeMax(float yRangeMax);
+        float getYRangeMax() const { return m_yRangeMax.load(std::memory_order_relaxed); }
 
         // --------------------------------------------------------------
         // Real-time audio-thread entry point
@@ -187,11 +255,57 @@ namespace AT
         // --------------------------------------------------------------
         void backgroundThreadLoop();
         void runLocalizationOnWindow(const std::vector<std::vector<float>>& window);
-        bool gccPhatDelaySamples(const float* ref, const float* ch, int numSamples, double& outDelaySamples);
-        bool sphericalInterpolation(const std::vector<double>& delaysSeconds,
-                                     const std::vector<char>& validMask,
-                                     SixDofSourcePosition& outPos,
-                                     double& outResidual) const;
+
+        /**
+         * @brief One spatial candidate on the MUSIC search grid.
+         */
+        struct GridPoint { float x, y, z; };
+
+        /// Builds the regular candidate-position grid: a disc of radius
+        /// equal to the array's own extent in the X/Z plane, swept over
+        /// [yRangeMin, yRangeMax] in Y, at `resolution` spacing — direct
+        /// port of build_grid() in apply_mask_MUSIC.py. NOT real-time safe
+        /// (allocates); called once per analysis window on the background
+        /// thread only.
+        std::vector<GridPoint> buildSearchGrid(float resolution, float yMin, float yMax) const;
+
+        /// Steering vector a(p,f): expected complex gain at each microphone
+        /// for a hypothetical unit source at `pos` and frequency `freqHz`
+        /// (propagation delay + 1/r decay, normalized to unit norm) — same
+        /// physical model as simulate_capture.py / apply_mask_MUSIC.py's
+        /// steering_vector(). Written into `outA` (must be m_numChannels long).
+        void steeringVector(const GridPoint& pos, float freqHz, std::vector<std::complex<float>>& outA) const;
+
+        /**
+         * @brief Extracts the top `numSources` eigenvectors (signal
+         * subspace) of a complex Hermitian covariance matrix K, without any
+         * third-party linear algebra dependency.
+         *
+         * Method: a complex Hermitian N×N matrix K = Kre + i*Kim (Kre
+         * symmetric, Kim antisymmetric) has the SAME eigenvalues as the
+         * real symmetric 2N×2N block matrix
+         *     M = [ Kre  -Kim ]
+         *         [ Kim   Kre ]
+         * each repeated twice; a real eigenvector (u;v) of M (u, v each
+         * length N) for eigenvalue lambda corresponds to the complex
+         * eigenvector w = u + i*v of K for that same lambda. M is
+         * diagonalized with a hand-rolled cyclic Jacobi eigenvalue solver
+         * (jacobiEigenSymmetric()) — simple, dependency-free, numerically
+         * robust, adequate for the background-thread/periodic-update cost
+         * budget validated for this feature (mics up to the low hundreds).
+         * Only the top `numSources` eigenpairs of M (by eigenvalue) are
+         * decoded back into complex vectors — taking one representative per
+         * (numerically) degenerate pair, since MUSIC's projection test only
+         * needs the SUBSPACE spanned, not a specific vector within a
+         * degenerate pair.
+         *
+         * @param K          Complex Hermitian covariance, numChannels x numChannels, row-major.
+         * @param numSources Number of leading eigenvectors to extract (signal subspace size).
+         * @param outSignalSubspace Filled with `numSources` columns (each numChannels long).
+         */
+        void computeSignalSubspace(const std::vector<std::complex<float>>& K, int numSources,
+                                    std::vector<std::vector<std::complex<float>>>& outSignalSubspace) const;
+
         void pushEstimateAndUpdateModes(const SixDofSourcePosition& estimate);
 
         /**
@@ -258,21 +372,28 @@ namespace AT
         std::vector<std::array<float, 3>> m_micPositions;
         std::array<float, 3> m_arrayCentroid{ 0.0f, 0.0f, 0.0f };
         float  m_maxPlausibleDist  = 100.0f;   // 10x array extent, computed in prepare()
-        double m_maxDelaySeconds   = 0.05;     // 2x array extent / c, margin, computed in prepare()
+        float  m_arrayExtent       = 5.0f;     // max mic distance from centroid, computed in prepare()
 
         // --------------------------------------------------------------
         // Parameters
         // --------------------------------------------------------------
-        std::atomic<bool>  m_enabled          { false };
-        std::atomic<float> m_gridRes          { 0.02f };
-        std::atomic<int>   m_minBlockCount    { 4 };
-        std::atomic<int>   m_numBufferedBlocks{ 1 };
+        std::atomic<bool>  m_enabled              { false };
+        std::atomic<int>   m_maxSources           { 3 };
+        std::atomic<float> m_gridRes              { 0.5f };
+        std::atomic<int>   m_minBlockCount        { 4 };
+        std::atomic<int>   m_numBufferedBlocks    { 8 };
+        std::atomic<float> m_searchGridResolution { 0.5f };
+        std::atomic<int>   m_maxBins              { 8 };
+        std::atomic<float> m_bandHzMin            { 400.0f };
+        std::atomic<float> m_bandHzMax            { 4000.0f };
+        std::atomic<float> m_yRangeMin            { -1.0f };
+        std::atomic<float> m_yRangeMax            { 2.0f };
 
         // --------------------------------------------------------------
         // Rolling analysis window (audio thread writes)
         // --------------------------------------------------------------
         static constexpr int MAX_BLOCK_SIZE_SUPPORTED    = 4096;
-        static constexpr int MAX_BUFFERED_BLOCKS_SUPPORTED = 16;
+        static constexpr int MAX_BUFFERED_BLOCKS_SUPPORTED = 32;
         std::vector<std::vector<float>> m_windowBuffer;   // [channel][sample]
         int m_windowWritePos          = 0;
         int m_windowTargetSamples     = 0;   // maxBlockSize * numBufferedBlocks, latched at window start
@@ -288,9 +409,12 @@ namespace AT
         std::condition_variable         m_pendingWindowCv;
 
         // --------------------------------------------------------------
-        // Rolling history of single-window position estimates (background
-        // thread only) — mode detection runs over this, adapting the
-        // Python prototype's "per-block estimates list" to streaming.
+        // Rolling history of position estimates (background thread only,
+        // multiple entries can be pushed per analysis window now — up to
+        // maxSources peaks per MUSIC pass, vs. exactly one per window for
+        // the previous GCC-PHAT implementation) — mode detection runs over
+        // this, adapting the Python prototype's "per-block estimates list"
+        // to streaming.
         // --------------------------------------------------------------
         static constexpr int HISTORY_SIZE = 32;
         std::vector<SixDofSourcePosition> m_estimateHistory;
@@ -335,14 +459,19 @@ namespace AT
         static constexpr float GAIN_SMOOTH_TIME_SECONDS = 0.05f;
 
         // --------------------------------------------------------------
-        // FFT (JUCE only — no third-party dependency)
+        // FFT (JUCE only — no third-party dependency). Sized for a SINGLE
+        // STFT analysis frame (STFT_FRAME_SIZE), reused many times per
+        // analysis window (one FFT per hop per channel) — unlike the
+        // previous GCC-PHAT implementation, which sized its FFT for the
+        // WHOLE window at once (linear cross-correlation).
         // --------------------------------------------------------------
+        static constexpr int STFT_FRAME_SIZE = 1024;
+        static constexpr int STFT_HOP_SIZE   = 512; // 50% overlap, matches the Python prototypes
         std::unique_ptr<juce::dsp::FFT> m_fft;
         int m_fftOrder = 0;
-        int m_fftSize  = 0;
-        // Scratch complex buffers (interleaved re,im), reused across calls
+        // Scratch complex buffer (interleaved re,im), reused across calls
         // on the background thread only — never touched by the audio thread.
-        std::vector<float> m_fftBufA, m_fftBufB;
+        std::vector<float> m_fftScratch;
 
         // --------------------------------------------------------------
         // Background thread lifecycle
@@ -353,14 +482,5 @@ namespace AT
         static constexpr float SPEED_OF_SOUND  = 340.0f;
         static constexpr float MIN_DIST        = 0.05f;
         static constexpr float MASK_TRANSITION = 0.3f;   // metres, matches Python default
-
-        // Fit-quality rejection threshold for sphericalInterpolation()'s
-        // residual (see its implementation comment). Clean single-source
-        // data: ~0 (validated ~1e-10). Data mixed from two simultaneously
-        // active sources: ~4+ (validated, ~7 orders of magnitude higher) —
-        // this threshold has enormous margin either way, not a fine-tuned
-        // knob. Units: same as the TDOA equations' RHS (~metres^2 scale).
-        static constexpr double MAX_FIT_RESIDUAL = 0.5;
-        static constexpr int   REF_CHANNEL     = 0;
     };
 }
