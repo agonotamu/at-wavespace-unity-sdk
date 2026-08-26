@@ -145,6 +145,29 @@ namespace AT
 
     void Spatializer::setIsInsideAndUpdateSpeakerMask()
     {
+        // Recording-only diversion: simulate_capture.py has NO speaker
+        // masking at all — every mic always captures the source, attenuated
+        // only by 1/r (see updateCaptureSimulationGainAndDelay()). The WFS
+        // geometric mask below (active/inactive per speaker relative to the
+        // listener) is a DIFFERENT, independent mechanism from the gain/delay
+        // bypass in udpateWfsGainAndDelay() — this early return is the other
+        // half of that same diversion, so a SimulatedCapture recording never
+        // has channels zeroed out by a masking rule that has no equivalent
+        // in the physical model it's meant to reproduce.
+        if (m_useCaptureSimulationModel.load(std::memory_order_relaxed))
+        {
+            m_isInside               = true;
+            m_insideBlend            = 1.0f;
+            m_numActiveSpeakerInMask = m_numOutputChannels;
+            for (int i = 0; i < m_numOutputChannels; ++i)
+            {
+                m_wfsSpeakerMask[i]        = 1.0f;
+                m_workBufferOutsideMask[i] = 1.0f;
+            }
+            m_numActiveSpeakerInMaskSmoother.setTargetValue(static_cast<float>(m_numOutputChannels));
+            return;
+        }
+
         // Skip classification entirely until the engine has adopted at least one
         // REAL listener transform from Unity. Before that, m_pListenerPosition
         // (this Spatializer's raw copy, set via setListenerTransform()) is still

@@ -1918,25 +1918,13 @@ namespace AT
         }
     }
 
-    void SpatializationEngine::setPlayer6dofGridRes(int uid, float gridRes)
+    void SpatializationEngine::setPlayer6dofConfidenceThreshold(int uid, float confidenceThreshold)
     {
         for (auto& spatPlayer : m_spatPlayers)
         {
             if (spatPlayer && spatPlayer->getUID() == uid)
             {
-                spatPlayer->set6dofGridRes(gridRes);
-                break;
-            }
-        }
-    }
-
-    void SpatializationEngine::setPlayer6dofMinBlockCount(int uid, int minBlockCount)
-    {
-        for (auto& spatPlayer : m_spatPlayers)
-        {
-            if (spatPlayer && spatPlayer->getUID() == uid)
-            {
-                spatPlayer->set6dofMinBlockCount(minBlockCount);
+                spatPlayer->set6dofConfidenceThreshold(confidenceThreshold);
                 break;
             }
         }

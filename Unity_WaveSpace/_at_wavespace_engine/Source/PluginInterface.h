@@ -423,24 +423,17 @@ EXPORT_API int CALL_CONV AT_WS_setPlayer6dofMaskEnabled(int uid, bool isEnabled)
 EXPORT_API int CALL_CONV AT_WS_setPlayer6dofMaxSources(int uid, int maxSources);
 
 /**
- * @brief Sets the grid resolution (metres) used by the 6DOF TEMPORAL
- *        mode-detection histogram (groups repeated position estimates
- *        across successive analysis windows) — distinct from the MUSIC
- *        spatial search grid, see AT_WS_setPlayer6dofSearchGridResolution().
- *        Default 0.5, matching the default search grid resolution.
- * @param uid      Unique identifier of the player
- * @param gridRes  Grid resolution in metres (> 0)
+ * @brief Sets the minimum ratio between a grid peak's pseudo-spectrum value
+ *        and the window's own noise-floor estimate (median pseudo-spectrum
+ *        value across the whole search grid) for that peak to be accepted
+ *        as a real source — evaluated fresh within each analysis window,
+ *        no cross-window history (detection is instantaneous). Higher =
+ *        stricter. Needs empirical tuning against real recordings — default
+ *        10 is a first guess, not a validated constant.
+ * @param uid                  Unique identifier of the player
+ * @param confidenceThreshold  Minimum peak/noise-floor ratio (> 1.0)
  */
-EXPORT_API int CALL_CONV AT_WS_setPlayer6dofGridRes(int uid, float gridRes);
-
-/**
- * @brief Sets the minimum number of matching estimates (within the rolling
- *        localization history) required for a position to be accepted as a
- *        real source. Default 4.
- * @param uid            Unique identifier of the player
- * @param minBlockCount  Minimum match count (>= 1)
- */
-EXPORT_API int CALL_CONV AT_WS_setPlayer6dofMinBlockCount(int uid, int minBlockCount);
+EXPORT_API int CALL_CONV AT_WS_setPlayer6dofConfidenceThreshold(int uid, float confidenceThreshold);
 
 /**
  * @brief Sets the number of audio callback blocks accumulated into one 6DOF

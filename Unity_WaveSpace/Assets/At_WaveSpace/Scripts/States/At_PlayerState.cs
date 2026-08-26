@@ -71,21 +71,17 @@ public class At_PlayerState
     public bool is6dofMaskEnabled = false;
 
     /// <summary>
-    /// Grid resolution (metres) for the 6DOF TEMPORAL mode-detection
-    /// histogram (groups repeated position estimates across successive
-    /// analysis windows) — distinct from the MUSIC spatial search grid, see
-    /// sixDofSearchGridResolution. Default 0.5, matching the default search
-    /// grid resolution so repeated detections of the same physical source
-    /// (always snapped to the nearest search-grid point) bucket together
-    /// cleanly.
+    /// Minimum ratio between a grid peak's pseudo-spectrum value and the
+    /// window's own noise-floor estimate (median pseudo-spectrum value
+    /// across the whole search grid) for that peak to be accepted as a real
+    /// source — evaluated fresh within each analysis window, no
+    /// cross-window history (detection is instantaneous, follows moving or
+    /// intermittent sources). Higher = stricter (fewer false positives, may
+    /// miss weak/distant sources); lower = more permissive. Needs empirical
+    /// tuning against real recordings — default 10 is a first guess, not a
+    /// validated constant.
     /// </summary>
-    public float sixDofGridRes = 0.5f;
-
-    /// <summary>
-    /// Minimum number of matching position estimates (within the rolling
-    /// localization history) for a 6DOF source to be accepted. Default 4.
-    /// </summary>
-    public int sixDofMinBlockCount = 4;
+    public float sixDofConfidenceThreshold = 10.0f;
 
     /// <summary>
     /// Number of audio callback blocks accumulated into one 6DOF localization

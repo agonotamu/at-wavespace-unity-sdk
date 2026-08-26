@@ -170,12 +170,7 @@ namespace AT
 
         m_pendingWindow.assign((size_t) numChannels, std::vector<float>());
 
-        m_estimateHistory.assign(HISTORY_SIZE, SixDofSourcePosition{});
-        m_historyWritePos = 0;
-        m_historyCount    = 0;
-
         m_detectedSources.clear();
-        m_trackedCandidates.clear();
         m_state.store(State::Bypass, std::memory_order_relaxed);
         m_staleCycleCount = 0;
         m_maskLogInitialized = false;
@@ -230,14 +225,12 @@ namespace AT
         m_maxSources.store(juce::jlimit(1, MAX_SOURCES, maxSources), std::memory_order_relaxed);
     }
 
-    void SixDofMaskProcessor::setGridRes(float gridRes)
+    void SixDofMaskProcessor::setConfidenceThreshold(float confidenceThreshold)
     {
-        m_gridRes.store(std::max(0.001f, gridRes), std::memory_order_relaxed);
-    }
-
-    void SixDofMaskProcessor::setMinBlockCount(int minBlockCount)
-    {
-        m_minBlockCount.store(std::max(1, minBlockCount), std::memory_order_relaxed);
+        // Must stay > 1.0: a threshold at or below 1.0 would accept the
+        // noise-floor median itself as a "source" (ratio == 1), defeating
+        // the whole point of the test.
+        m_confidenceThreshold.store(std::max(1.001f, confidenceThreshold), std::memory_order_relaxed);
     }
 
     void SixDofMaskProcessor::setNumBufferedBlocks(int numBufferedBlocks)
@@ -796,8 +789,17 @@ namespace AT
         std::iota(order.begin(), order.end(), 0);
         std::sort(order.begin(), order.end(), [&](size_t x, size_t y) { return spectrum[x] > spectrum[y]; });
 
+        // Noise-floor estimate for the confidence test below: median
+        // pseudo-spectrum value across the WHOLE grid. Free to compute —
+        // `order` is already sorted, so the middle-ranked point IS the
+        // median, no extra pass needed. Robust to the handful of genuine
+        // peaks, since real sources are always a small minority of grid
+        // points.
+        const double noiseFloor = std::max(spectrum[order[order.size() / 2]], 1e-300);
+
         const float minSep = gridRes * 4.0f;
         std::vector<GridPoint> selected;
+        std::vector<double>    selectedValue;
         for (size_t idx : order)
         {
             const GridPoint& p = grid[idx];
@@ -810,194 +812,69 @@ namespace AT
             if (!tooClose)
             {
                 selected.push_back(p);
+                selectedValue.push_back(spectrum[idx]);
                 if ((int) selected.size() >= maxSrc)
                     break;
             }
         }
 
-#if AT_SIXDOF_DEBUG_LOG
-        std::cout << "[6DOF][localize] bins=" << binIndices.size() << "  frames=" << numFrames
-                   << "  grid_points=" << grid.size() << "  peaks_selected=" << selected.size() << "\n";
-        for (const auto& p : selected)
-            std::cout << "[6DOF][localize]   peak @ (" << p.x << ", " << p.y << ", " << p.z << ")\n";
-#endif
-
-        // Plausibility filter (matches the previous implementation's
-        // rationale — reject anything absurdly far from the array, e.g. a
-        // numerical corner case rather than a real position).
-        for (const auto& p : selected)
+        // ---- Instantaneous acceptance ------------------------------------
+        // Confidence test, evaluated fresh within THIS window only — no
+        // cross-window memory, which is what makes detection instantaneous
+        // and lets it follow moving/intermittent sources (see the file doc
+        // comment: the earlier history/hysteresis design assumed static
+        // sources revisited window after window, and broke down otherwise).
+        // A peak is accepted iff it both clears the confidence threshold AND
+        // passes the plausibility filter (matches the previous
+        // implementation's rationale — reject anything absurdly far from
+        // the array, e.g. a numerical corner case rather than a real
+        // position).
+        const float confThreshold = m_confidenceThreshold.load(std::memory_order_relaxed);
+        std::vector<SixDofSourcePosition> acceptedSources;
+        for (size_t i = 0; i < selected.size(); ++i)
         {
+            const GridPoint& p = selected[i];
+            const double confidence = selectedValue[i] / noiseFloor;
+
             const float dx = p.x - m_arrayCentroid[0];
             const float dy = p.y - m_arrayCentroid[1];
             const float dz = p.z - m_arrayCentroid[2];
-            if (std::sqrt(dx * dx + dy * dy + dz * dz) > m_maxPlausibleDist)
-                continue;
-            // Each peak feeds the SAME temporal history/hysteresis pipeline
-            // as before, unchanged — a genuine source keeps landing near the
-            // same grid point window after window; a pseudo-spectrum
-            // artifact typically does not (see pushEstimateAndUpdateModes()).
-            pushEstimateAndUpdateModes({ p.x, p.y, p.z });
+            const bool plausible = std::sqrt(dx * dx + dy * dy + dz * dz) <= m_maxPlausibleDist;
+
+#if AT_SIXDOF_DEBUG_LOG
+            std::cout << "[6DOF][localize]   peak @ (" << p.x << ", " << p.y << ", " << p.z
+                       << ")  confidence=" << confidence
+                       << (confidence >= confThreshold ? "  <- ACCEPTED" : "  (below threshold)")
+                       << (plausible ? "" : "  (implausible, rejected)") << "\n";
+#endif
+            if (plausible && confidence >= confThreshold)
+                acceptedSources.push_back({ p.x, p.y, p.z });
         }
+
+#if AT_SIXDOF_DEBUG_LOG
+        std::cout << "[6DOF][localize] bins=" << binIndices.size() << "  frames=" << numFrames
+                   << "  grid_points=" << grid.size() << "  noise_floor=" << noiseFloor
+                   << "  confidence_threshold=" << confThreshold
+                   << "  peaks_selected=" << selected.size()
+                   << "  accepted=" << acceptedSources.size() << "\n";
+#endif
+
+        finalizeDetectedSources(acceptedSources);
     }
 
-    void SixDofMaskProcessor::pushEstimateAndUpdateModes(const SixDofSourcePosition& estimate)
+    void SixDofMaskProcessor::finalizeDetectedSources(const std::vector<SixDofSourcePosition>& acceptedSources)
     {
-        m_estimateHistory[(size_t) m_historyWritePos] = estimate;
-        m_historyWritePos = (m_historyWritePos + 1) % HISTORY_SIZE;
-        m_historyCount = std::min(m_historyCount + 1, HISTORY_SIZE);
-
-        // Mode search (histogram on a grid_res-rounded position) over the
-        // rolling history — genuine dominant sources repeat almost exactly
-        // from window to window, while spurious pseudo-spectrum peaks
-        // (reverberation, finite-snapshot estimation noise) scatter and
-        // rarely repeat. Counting occurrences therefore separates signal
-        // from that specific kind of noise far more robustly than
-        // proximity-based clustering (k-means).
-        const float gridRes = m_gridRes.load(std::memory_order_relaxed);
-        const int   minCount = m_minBlockCount.load(std::memory_order_relaxed);
-        // Same runtime-configurable cap as runLocalizationOnWindow()'s maxSrc —
-        // MAX_SOURCES below is only the compile-time CEILING (see its own doc
-        // comment); using it directly here (as this code used to) let the
-        // accumulated tracked-source count grow past the user's configured
-        // maxSources over many cycles, since different windows can surface
-        // different subsets of a scene with more real sources than maxSources.
-        const int maxSrc = juce::jlimit(1, MAX_SOURCES, m_maxSources.load(std::memory_order_relaxed));
-
-        struct Bucket { std::array<float, 3> roundedPos; int count; };
-        std::vector<Bucket> buckets;
-        buckets.reserve((size_t) m_historyCount);
-
-        for (int i = 0; i < m_historyCount; ++i)
-        {
-            const auto& p = m_estimateHistory[(size_t) i];
-            std::array<float, 3> rounded = {
-                std::round(p.x / gridRes) * gridRes,
-                std::round(p.y / gridRes) * gridRes,
-                std::round(p.z / gridRes) * gridRes
-            };
-
-            bool found = false;
-            for (auto& bucket : buckets)
-            {
-                if (bucket.roundedPos == rounded) { ++bucket.count; found = true; break; }
-            }
-            if (!found)
-                buckets.push_back({ rounded, 1 });
-        }
-
-        std::sort(buckets.begin(), buckets.end(),
-                  [](const Bucket& a, const Bucket& b) { return a.count > b.count; });
-
-#if AT_SIXDOF_DEBUG_LOG
-        std::cout << "[6DOF][mode] history=" << m_historyCount << "/" << HISTORY_SIZE
-                   << "  grid_res=" << gridRes << "  min_block_count=" << minCount
-                   << "  distinct_buckets=" << buckets.size() << "\n";
-        {
-            int shown = 0;
-            for (const auto& bucket : buckets)
-            {
-                std::cout << "[6DOF][mode]   (" << bucket.roundedPos[0] << ", "
-                           << bucket.roundedPos[1] << ", " << bucket.roundedPos[2]
-                           << ")  x" << bucket.count
-                           << (bucket.count >= minCount ? "  <- ACCEPTED" : "") << "\n";
-                if (++shown >= 10) { std::cout << "[6DOF][mode]   ...\n"; break; }
-            }
-        }
-#endif
-
-        std::vector<SixDofSourcePosition> newSources;
-        for (const auto& bucket : buckets)
-        {
-            if (bucket.count < minCount)
-                break; // sorted descending: nothing further qualifies either
-            newSources.push_back({ bucket.roundedPos[0], bucket.roundedPos[1], bucket.roundedPos[2] });
-            if ((int) newSources.size() >= maxSrc)
-                break;
-        }
-
-        // ---- Per-source temporal hysteresis -------------------------------
-        // Match this cycle's accepted positions (newSources) against
-        // candidates already being tracked; promote/demote with a grace
-        // period on both ends (see TrackedCandidate's doc comment) instead
-        // of blindly replacing m_detectedSources with newSources every
-        // cycle. This is what actually fixes the single-cycle dropout —
-        // the global Valid/Stale/Bypass machinery below still exists
-        // separately, for the case where EVERY tracked source is lost.
-        std::vector<bool> matched(newSources.size(), false);
-        for (auto& cand : m_trackedCandidates)
-        {
-            int bestIdx = -1;
-            float bestDist = SOURCE_MATCH_DIST;
-            for (size_t j = 0; j < newSources.size(); ++j)
-            {
-                if (matched[j]) continue;
-                const float dx = newSources[j].x - cand.pos.x;
-                const float dy = newSources[j].y - cand.pos.y;
-                const float dz = newSources[j].z - cand.pos.z;
-                const float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
-                if (dist < bestDist) { bestDist = dist; bestIdx = (int) j; }
-            }
-            if (bestIdx >= 0)
-            {
-                cand.pos = newSources[(size_t) bestIdx];
-                cand.presentStreak++;
-                cand.absentStreak = 0;
-                matched[(size_t) bestIdx] = true;
-                if (!cand.confirmed && cand.presentStreak >= SOURCE_CONFIRM_CYCLES)
-                    cand.confirmed = true;
-            }
-            else
-            {
-                cand.presentStreak = 0;
-                cand.absentStreak++;
-            }
-        }
-        // Drop candidates gone too long: confirmed ones get SOURCE_GRACE_CYCLES
-        // of slack; never-yet-confirmed provisional ones are dropped on the
-        // very first miss (no point tracking a phantom that didn't even
-        // survive to confirmation).
-        m_trackedCandidates.erase(
-            std::remove_if(m_trackedCandidates.begin(), m_trackedCandidates.end(),
-                [](const TrackedCandidate& c)
-                {
-                    return c.confirmed ? (c.absentStreak > SOURCE_GRACE_CYCLES)
-                                        : (c.absentStreak > 0);
-                }),
-            m_trackedCandidates.end());
-        // New, unmatched candidates start provisional.
-        for (size_t j = 0; j < newSources.size(); ++j)
-        {
-            if (matched[j]) continue;
-            if ((int) m_trackedCandidates.size() >= maxSrc) break;
-            TrackedCandidate c;
-            c.pos = newSources[j];
-            c.presentStreak = 1;
-            c.confirmed = (SOURCE_CONFIRM_CYCLES <= 1);
-            m_trackedCandidates.push_back(c);
-        }
-
-        std::vector<SixDofSourcePosition> confirmedSources;
-        for (const auto& cand : m_trackedCandidates)
-            if (cand.confirmed)
-                confirmedSources.push_back(cand.pos);
-
-#if AT_SIXDOF_DEBUG_LOG
-        std::cout << "[6DOF][track] tracked=" << m_trackedCandidates.size()
-                   << "  confirmed=" << confirmedSources.size()
-                   << "  (raw this-cycle accepted=" << newSources.size() << ")\n";
-#endif
-
         // ---- Detection failure protection state machine -------------------
-        // Now driven by confirmedSources (post-hysteresis), not the raw
-        // per-cycle newSources — a single missed cycle for one source no
-        // longer touches this machinery at all, since the OTHER confirmed
-        // sources (if any) keep confirmedSources non-empty. MAX_STALE_CYCLES
-        // only kicks in once every tracked source has exhausted its own
-        // grace period too.
-        if (!confirmedSources.empty())
+        // See the header's State enum doc comment for the full rationale —
+        // unchanged from before. This machinery handles TOTAL detection
+        // failure (zero accepted sources this window), a different concern
+        // from per-source acceptance (now instantaneous, decided entirely in
+        // runLocalizationOnWindow() via the confidence test — no hysteresis
+        // left at the per-source level).
+        if (!acceptedSources.empty())
         {
             std::lock_guard<std::mutex> lock(m_sourcesMutex);
-            m_detectedSources = std::move(confirmedSources);
+            m_detectedSources = acceptedSources;
             m_state.store(State::Valid, std::memory_order_relaxed);
             m_staleCycleCount = 0;
 #if AT_SIXDOF_DEBUG_LOG

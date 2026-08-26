@@ -644,7 +644,7 @@ EXPORT_API int CALL_CONV AT_WS_setPlayer6dofMaxSources(int uid, int maxSources)
     }
 }
 
-EXPORT_API int CALL_CONV AT_WS_setPlayer6dofGridRes(int uid, float gridRes)
+EXPORT_API int CALL_CONV AT_WS_setPlayer6dofConfidenceThreshold(int uid, float confidenceThreshold)
 {
     std::lock_guard<std::mutex> lock(g_mutex);
     try
@@ -652,24 +652,7 @@ EXPORT_API int CALL_CONV AT_WS_setPlayer6dofGridRes(int uid, float gridRes)
         if (!g_audioManager)
             return AUDIO_PLUGIN_OK;
 
-        g_audioManager->setPlayer6dofGridRes(uid, gridRes);
-        return AUDIO_PLUGIN_OK;
-    }
-    catch (...)
-    {
-        return AUDIO_PLUGIN_ERROR;
-    }
-}
-
-EXPORT_API int CALL_CONV AT_WS_setPlayer6dofMinBlockCount(int uid, int minBlockCount)
-{
-    std::lock_guard<std::mutex> lock(g_mutex);
-    try
-    {
-        if (!g_audioManager)
-            return AUDIO_PLUGIN_OK;
-
-        g_audioManager->setPlayer6dofMinBlockCount(uid, minBlockCount);
+        g_audioManager->setPlayer6dofConfidenceThreshold(uid, confidenceThreshold);
         return AUDIO_PLUGIN_OK;
     }
     catch (...)

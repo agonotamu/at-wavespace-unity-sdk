@@ -913,26 +913,15 @@ namespace AT
         return m_puSixDofMask != nullptr ? m_puSixDofMask->getMaxSources() : 3;
     }
 
-    void SpatPlayer::set6dofGridRes(float gridRes)
+    void SpatPlayer::set6dofConfidenceThreshold(float confidenceThreshold)
     {
         if (m_puSixDofMask != nullptr)
-            m_puSixDofMask->setGridRes(gridRes);
+            m_puSixDofMask->setConfidenceThreshold(confidenceThreshold);
     }
 
-    float SpatPlayer::get6dofGridRes() const
+    float SpatPlayer::get6dofConfidenceThreshold() const
     {
-        return m_puSixDofMask != nullptr ? m_puSixDofMask->getGridRes() : 0.5f;
-    }
-
-    void SpatPlayer::set6dofMinBlockCount(int minBlockCount)
-    {
-        if (m_puSixDofMask != nullptr)
-            m_puSixDofMask->setMinBlockCount(minBlockCount);
-    }
-
-    int SpatPlayer::get6dofMinBlockCount() const
-    {
-        return m_puSixDofMask != nullptr ? m_puSixDofMask->getMinBlockCount() : 4;
+        return m_puSixDofMask != nullptr ? m_puSixDofMask->getConfidenceThreshold() : 10.0f;
     }
 
     void SpatPlayer::set6dofNumBufferedBlocks(int numBufferedBlocks)

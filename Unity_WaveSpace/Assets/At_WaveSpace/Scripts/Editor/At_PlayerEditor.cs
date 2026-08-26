@@ -58,8 +58,7 @@ public class At_PlayerEditor : Editor
     private SerializedProperty sp_highPassGain;
     private SerializedProperty sp_highPassBypass;
     private SerializedProperty sp_is6dofMaskEnabled;
-    private SerializedProperty sp_sixDofGridRes;
-    private SerializedProperty sp_sixDofMinBlockCount;
+    private SerializedProperty sp_sixDofConfidenceThreshold;
     private SerializedProperty sp_sixDofNumBufferedBlocks;
     private SerializedProperty sp_sixDofMaxSources;
     private SerializedProperty sp_sixDofSearchGridResolution;
@@ -91,8 +90,7 @@ public class At_PlayerEditor : Editor
         sp_lowPassBypass         = serializedObject.FindProperty("lowPassBypass");
         sp_highPassBypass        = serializedObject.FindProperty("highPassBypass");
         sp_is6dofMaskEnabled     = serializedObject.FindProperty("is6dofMaskEnabled");
-        sp_sixDofGridRes         = serializedObject.FindProperty("sixDofGridRes");
-        sp_sixDofMinBlockCount   = serializedObject.FindProperty("sixDofMinBlockCount");
+        sp_sixDofConfidenceThreshold = serializedObject.FindProperty("sixDofConfidenceThreshold");
         sp_sixDofNumBufferedBlocks = serializedObject.FindProperty("sixDofNumBufferedBlocks");
         sp_sixDofMaxSources      = serializedObject.FindProperty("sixDofMaxSources");
         sp_sixDofSearchGridResolution = serializedObject.FindProperty("sixDofSearchGridResolution");
@@ -136,8 +134,7 @@ public class At_PlayerEditor : Editor
             playerState.lowPassBypass          = true;
             playerState.highPassBypass         = false;
             playerState.is6dofMaskEnabled      = false;
-            playerState.sixDofGridRes          = 0.5f;
-            playerState.sixDofMinBlockCount    = 4;
+            playerState.sixDofConfidenceThreshold = 10.0f;
             playerState.sixDofNumBufferedBlocks = 8;
             playerState.sixDofMaxSources       = 3;
             playerState.sixDofSearchGridResolution = 0.5f;
@@ -568,37 +565,29 @@ public class At_PlayerEditor : Editor
             MessageType.None);
 
         GUILayout.Space(5);
-        GUILayout.Label("Temporal confirmation (history)", EditorStyles.miniBoldLabel);
+        GUILayout.Label("Detection confidence", EditorStyles.miniBoldLabel);
 
         EditorGUILayout.BeginHorizontal();
-        GUILayout.Label("Grid Resolution (m)", GUILayout.Width(150));
-        string gridResStr = EditorGUILayout.TextField(playerState.sixDofGridRes.ToString("F3"), GUILayout.Width(60));
-        if (float.TryParse(gridResStr,
+        GUILayout.Label("Confidence Threshold", GUILayout.Width(150));
+        string confStr = EditorGUILayout.TextField(playerState.sixDofConfidenceThreshold.ToString("F2"), GUILayout.Width(60));
+        if (float.TryParse(confStr,
                 System.Globalization.NumberStyles.Float,
                 System.Globalization.CultureInfo.InvariantCulture,
-                out float pgr))
+                out float pct))
         {
-            pgr = Mathf.Clamp(pgr, 0.001f, 2f);
-            if (!Mathf.Approximately(pgr, playerState.sixDofGridRes)) { playerState.sixDofGridRes = pgr; shouldSave = true; }
+            pct = Mathf.Max(pct, 1.001f);
+            if (!Mathf.Approximately(pct, playerState.sixDofConfidenceThreshold)) { playerState.sixDofConfidenceThreshold = pct; shouldSave = true; }
         }
         EditorGUILayout.EndHorizontal();
         EditorGUILayout.HelpBox(
-            "Rounding resolution for the TEMPORAL mode-detection history (across successive " +
-            "windows) — distinct from Search Grid Resolution above. Default 0.5 matches the " +
-            "default search grid so repeated detections bucket together cleanly.",
+            "Minimum ratio between a candidate peak's strength and the window's own noise-floor " +
+            "estimate for it to be accepted as a real source. Evaluated fresh every analysis " +
+            "window, with no memory of previous windows — detection is instantaneous, so it also " +
+            "follows moving or intermittent sources (unlike the earlier history-based design this " +
+            "replaces). Higher = stricter (fewer false positives, may miss weak/distant sources); " +
+            "lower = more permissive. Needs empirical tuning against your own recordings — the " +
+            "default (10) is a starting point, not a validated constant.",
             MessageType.None);
-
-        GUILayout.Space(5);
-
-        EditorGUILayout.BeginHorizontal();
-        GUILayout.Label("Min Block Count", GUILayout.Width(150));
-        string minCountStr = EditorGUILayout.TextField(playerState.sixDofMinBlockCount.ToString(), GUILayout.Width(60));
-        if (int.TryParse(minCountStr, out int pmc))
-        {
-            pmc = Mathf.Clamp(pmc, 1, 64);
-            if (pmc != playerState.sixDofMinBlockCount) { playerState.sixDofMinBlockCount = pmc; shouldSave = true; }
-        }
-        EditorGUILayout.EndHorizontal();
 
         GUILayout.Space(5);
 
@@ -614,7 +603,9 @@ public class At_PlayerEditor : Editor
         EditorGUILayout.HelpBox(
             "Audio blocks accumulated per localization analysis window. Must be large enough for " +
             "several STFT snapshots per analyzed band — MUSIC needs more than GCC-PHAT used to " +
-            "(default 8, not 1) for a numerically well-behaved covariance estimate.",
+            "(default 8, not 1) for a numerically well-behaved covariance estimate. Not part of " +
+            "the detection-confidence mechanism above: this controls how much audio feeds ONE " +
+            "covariance estimate, independent of how that estimate's peaks are judged.",
             MessageType.None);
 
         if (player.isPlaying)
@@ -648,8 +639,7 @@ public class At_PlayerEditor : Editor
         player.lowPassBypass          = playerState.lowPassBypass;
         player.highPassBypass         = playerState.highPassBypass;
         player.is6dofMaskEnabled      = playerState.is6dofMaskEnabled;
-        player.sixDofGridRes          = playerState.sixDofGridRes;
-        player.sixDofMinBlockCount    = playerState.sixDofMinBlockCount;
+        player.sixDofConfidenceThreshold = playerState.sixDofConfidenceThreshold;
         player.sixDofNumBufferedBlocks = playerState.sixDofNumBufferedBlocks;
         player.sixDofMaxSources       = playerState.sixDofMaxSources;
         player.sixDofSearchGridResolution = playerState.sixDofSearchGridResolution;
@@ -693,8 +683,7 @@ public class At_PlayerEditor : Editor
         Sync(ref player.lowPassBypass,          playerState.lowPassBypass);
         Sync(ref player.highPassBypass,         playerState.highPassBypass);
         Sync(ref player.is6dofMaskEnabled,      playerState.is6dofMaskEnabled);
-        Sync(ref player.sixDofGridRes,          playerState.sixDofGridRes);
-        Sync(ref player.sixDofMinBlockCount,    playerState.sixDofMinBlockCount);
+        Sync(ref player.sixDofConfidenceThreshold, playerState.sixDofConfidenceThreshold);
         Sync(ref player.sixDofNumBufferedBlocks, playerState.sixDofNumBufferedBlocks);
         Sync(ref player.sixDofMaxSources,       playerState.sixDofMaxSources);
         Sync(ref player.sixDofSearchGridResolution, playerState.sixDofSearchGridResolution);
@@ -723,8 +712,7 @@ public class At_PlayerEditor : Editor
         sp_lowPassBypass.boolValue           = playerState.lowPassBypass;
         sp_highPassBypass.boolValue          = playerState.highPassBypass;
         sp_is6dofMaskEnabled.boolValue       = playerState.is6dofMaskEnabled;
-        sp_sixDofGridRes.floatValue          = playerState.sixDofGridRes;
-        sp_sixDofMinBlockCount.intValue      = playerState.sixDofMinBlockCount;
+        sp_sixDofConfidenceThreshold.floatValue = playerState.sixDofConfidenceThreshold;
         sp_sixDofNumBufferedBlocks.intValue  = playerState.sixDofNumBufferedBlocks;
         sp_sixDofMaxSources.intValue         = playerState.sixDofMaxSources;
         sp_sixDofSearchGridResolution.floatValue = playerState.sixDofSearchGridResolution;

@@ -197,8 +197,7 @@ namespace AT
         // ============================================================================
         void setPlayer6dofMaskEnabled(int uid, bool isEnabled);
         void setPlayer6dofMaxSources(int uid, int maxSources);
-        void setPlayer6dofGridRes(int uid, float gridRes);
-        void setPlayer6dofMinBlockCount(int uid, int minBlockCount);
+        void setPlayer6dofConfidenceThreshold(int uid, float confidenceThreshold);
         void setPlayer6dofNumBufferedBlocks(int uid, int numBufferedBlocks);
         void setPlayer6dofSearchGridResolution(int uid, float searchGridResolution);
         void setPlayer6dofMaxBins(int uid, int maxBins);

@@ -260,15 +260,12 @@ namespace AT
         void set6dofMaxSources(int maxSources);
         int get6dofMaxSources() const;
 
-        /// Grid resolution (metres) for the 6DOF TEMPORAL mode-detection
-        /// histogram — distinct from the MUSIC spatial search grid, see
-        /// set6dofSearchGridResolution(). Thread-safe.
-        void set6dofGridRes(float gridRes);
-        float get6dofGridRes() const;
-
-        /// Minimum matching-estimate count for a 6DOF source to be accepted. Thread-safe.
-        void set6dofMinBlockCount(int minBlockCount);
-        int get6dofMinBlockCount() const;
+        /// Minimum ratio between a grid peak's pseudo-spectrum value and the
+        /// window's own noise-floor estimate for that peak to be accepted as
+        /// a real source — evaluated fresh per window, no cross-window
+        /// history. Thread-safe.
+        void set6dofConfidenceThreshold(float confidenceThreshold);
+        float get6dofConfidenceThreshold() const;
 
         /// Number of audio blocks buffered into one 6DOF localization analysis window. Thread-safe.
         void set6dofNumBufferedBlocks(int numBufferedBlocks);

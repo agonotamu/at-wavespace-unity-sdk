@@ -8,7 +8,7 @@
  * Deliberately stripped down from the original WFS/binaural test Main.cpp:
  * no 3D/WFS player, no HRTF prompts, no source-position controls — the only
  * moving part under test here is 6DOF masking on a single 2D player.
- * gridRes / minBlockCount / numBufferedBlocks are NOT prompted — edit the
+ * confidenceThreshold / numBufferedBlocks are NOT prompted — edit the
  * DEFAULT_6DOF_* constants below directly, as requested.
  */
 
@@ -29,11 +29,11 @@
 constexpr float PI = 3.14159265358979323846f;
 
 // ── 6DOF parameters — edit here directly, not prompted (per request) ───────
-// gridRes=0.02 / minBlockCount=4: validated on the clean synthetic corpus.
-// numBufferedBlocks=1: try first (lowest latency, one full audio block).
-constexpr float DEFAULT_6DOF_GRID_RES           = 0.02f;
-constexpr int   DEFAULT_6DOF_MIN_BLOCK_COUNT    = 4;
-constexpr int   DEFAULT_6DOF_NUM_BUFFERED_BLOCKS = 6;
+// confidenceThreshold=10: starting point, not validated — needs empirical
+// tuning against real recordings (see AT_SixDofMaskProcessor's doc comment).
+// numBufferedBlocks=6: try first.
+constexpr float DEFAULT_6DOF_CONFIDENCE_THRESHOLD = 10.0f;
+constexpr int   DEFAULT_6DOF_NUM_BUFFERED_BLOCKS  = 6;
 
 constexpr int DEFAULT_BUFFER_SIZE = 4096;
 constexpr int DEFAULT_SAMPLE_RATE = 48000;
@@ -226,8 +226,7 @@ bool initializeAudioSystem()
     std::cout << "Buffer size:      " << DEFAULT_BUFFER_SIZE << " samples\n";
     std::cout << "Sample rate:      " << DEFAULT_SAMPLE_RATE << " Hz\n";
     std::cout << "Stereo downmix:   Amplitude panning (no HRTF)\n";
-    std::cout << "6DOF grid_res:    " << DEFAULT_6DOF_GRID_RES << "\n";
-    std::cout << "6DOF min_block:   " << DEFAULT_6DOF_MIN_BLOCK_COUNT << "\n";
+    std::cout << "6DOF confidence:  " << DEFAULT_6DOF_CONFIDENCE_THRESHOLD << "\n";
     std::cout << "6DOF buffered:    " << DEFAULT_6DOF_NUM_BUFFERED_BLOCKS << " block(s)\n";
     printSeparator();
     waitForEnter();
@@ -269,8 +268,7 @@ bool initializeAudioSystem()
 
     std::cout << "\nEnabling 6DOF source masking...\n";
     g_audioManager->setPlayer6dofMaskEnabled(g_config.playerUID, true);
-    g_audioManager->setPlayer6dofGridRes(g_config.playerUID, DEFAULT_6DOF_GRID_RES);
-    g_audioManager->setPlayer6dofMinBlockCount(g_config.playerUID, DEFAULT_6DOF_MIN_BLOCK_COUNT);
+    g_audioManager->setPlayer6dofConfidenceThreshold(g_config.playerUID, DEFAULT_6DOF_CONFIDENCE_THRESHOLD);
     g_audioManager->setPlayer6dofNumBufferedBlocks(g_config.playerUID, DEFAULT_6DOF_NUM_BUFFERED_BLOCKS);
     std::cout << "6DOF masking enabled.\n";
 

@@ -327,13 +327,9 @@ namespace AT
         {
             m_spatializationEngine.setPlayer6dofMaxSources(uid, maxSources);
         }
-        void setPlayer6dofGridRes(int uid, float gridRes)
+        void setPlayer6dofConfidenceThreshold(int uid, float confidenceThreshold)
         {
-            m_spatializationEngine.setPlayer6dofGridRes(uid, gridRes);
-        }
-        void setPlayer6dofMinBlockCount(int uid, int minBlockCount)
-        {
-            m_spatializationEngine.setPlayer6dofMinBlockCount(uid, minBlockCount);
+            m_spatializationEngine.setPlayer6dofConfidenceThreshold(uid, confidenceThreshold);
         }
         void setPlayer6dofNumBufferedBlocks(int uid, int numBufferedBlocks)
         {

@@ -86,11 +86,8 @@ public class At_Player : MonoBehaviour
     /// </summary>
     public bool is6dofMaskEnabled;
 
-    /// <summary>Grid resolution (metres) for 6DOF source mode-detection (temporal history, not the MUSIC spatial search grid).</summary>
-    public float sixDofGridRes;
-
-    /// <summary>Minimum matching-estimate count for a 6DOF source to be accepted.</summary>
-    public int sixDofMinBlockCount;
+    /// <summary>Minimum peak/noise-floor ratio for a 6DOF source to be accepted, evaluated fresh per window (no cross-window history).</summary>
+    public float sixDofConfidenceThreshold;
 
     /// <summary>Number of audio blocks buffered into one 6DOF localization window.</summary>
     public int sixDofNumBufferedBlocks;
@@ -356,8 +353,7 @@ public class At_Player : MonoBehaviour
             lowPassGain            = playerState.lowPassGain;
             numChannelsInAudioFile = playerState.numChannelsInAudiofile;
             is6dofMaskEnabled      = playerState.is6dofMaskEnabled;
-            sixDofGridRes          = playerState.sixDofGridRes;
-            sixDofMinBlockCount    = playerState.sixDofMinBlockCount;
+            sixDofConfidenceThreshold = playerState.sixDofConfidenceThreshold;
             sixDofNumBufferedBlocks = playerState.sixDofNumBufferedBlocks;
             sixDofMaxSources       = playerState.sixDofMaxSources;
             sixDofSearchGridResolution = playerState.sixDofSearchGridResolution;
@@ -449,8 +445,7 @@ public class At_Player : MonoBehaviour
     // (full buffer realloc + background-thread restart, unsafe concurrently
     // with the audio thread) — see AT_SpatPlayer::prepare6dofMask guard.
     private bool  m_last6dofEnabled;
-    private float m_last6dofGridRes;
-    private int   m_last6dofMinBlockCount;
+    private float m_last6dofConfidenceThreshold;
     private int   m_last6dofNumBufferedBlocks;
     private int   m_last6dofMaxSources;
     private float m_last6dofSearchGridResolution;
@@ -471,8 +466,7 @@ public class At_Player : MonoBehaviour
     {
         bool unchanged = m_6dofParamsPushedOnce
             && m_last6dofEnabled == is6dofMaskEnabled
-            && Mathf.Approximately(m_last6dofGridRes, sixDofGridRes)
-            && m_last6dofMinBlockCount == sixDofMinBlockCount
+            && Mathf.Approximately(m_last6dofConfidenceThreshold, sixDofConfidenceThreshold)
             && m_last6dofNumBufferedBlocks == sixDofNumBufferedBlocks
             && m_last6dofMaxSources == sixDofMaxSources
             && Mathf.Approximately(m_last6dofSearchGridResolution, sixDofSearchGridResolution)
@@ -486,8 +480,7 @@ public class At_Player : MonoBehaviour
         AT_WS_setPlayer6dofMaskEnabled(spatID, is6dofMaskEnabled);
         if (is6dofMaskEnabled)
         {
-            AT_WS_setPlayer6dofGridRes(spatID, sixDofGridRes);
-            AT_WS_setPlayer6dofMinBlockCount(spatID, sixDofMinBlockCount);
+            AT_WS_setPlayer6dofConfidenceThreshold(spatID, sixDofConfidenceThreshold);
             AT_WS_setPlayer6dofNumBufferedBlocks(spatID, sixDofNumBufferedBlocks);
             AT_WS_setPlayer6dofMaxSources(spatID, sixDofMaxSources);
             AT_WS_setPlayer6dofSearchGridResolution(spatID, sixDofSearchGridResolution);
@@ -499,8 +492,7 @@ public class At_Player : MonoBehaviour
         }
 
         m_last6dofEnabled              = is6dofMaskEnabled;
-        m_last6dofGridRes              = sixDofGridRes;
-        m_last6dofMinBlockCount        = sixDofMinBlockCount;
+        m_last6dofConfidenceThreshold  = sixDofConfidenceThreshold;
         m_last6dofNumBufferedBlocks    = sixDofNumBufferedBlocks;
         m_last6dofMaxSources           = sixDofMaxSources;
         m_last6dofSearchGridResolution = sixDofSearchGridResolution;
@@ -666,7 +658,7 @@ public class At_Player : MonoBehaviour
         // mode, while audio is actually streaming and being localized).
         if (!is3D && is6dofMaskEnabled && num6dofDetectedSources > 0)
         {
-            const float SPHERE_DIAMETER = 0.1f;
+            const float SPHERE_DIAMETER = 0.2f;
             Gizmos.color = Color.magenta;
             for (int i = 0; i < num6dofDetectedSources; i++)
             {
@@ -699,8 +691,7 @@ public class At_Player : MonoBehaviour
     [DllImport("at_wavespace_engine", CallingConvention = CallingConvention.StdCall)] private static extern int AT_WS_getPlayerMeters(int uid, IntPtr meter, int arraySize);
     [DllImport("at_wavespace_engine", CallingConvention = CallingConvention.StdCall)] private static extern int AT_WS_getAudioFileMetadata(string filepath, out int numChannels, out double sampleRate, out double lengthSeconds, out long totalSamples);
     [DllImport("at_wavespace_engine", CallingConvention = CallingConvention.StdCall)] private static extern int AT_WS_setPlayer6dofMaskEnabled(int uid, bool isEnabled);
-    [DllImport("at_wavespace_engine", CallingConvention = CallingConvention.StdCall)] private static extern int AT_WS_setPlayer6dofGridRes(int uid, float gridRes);
-    [DllImport("at_wavespace_engine", CallingConvention = CallingConvention.StdCall)] private static extern int AT_WS_setPlayer6dofMinBlockCount(int uid, int minBlockCount);
+    [DllImport("at_wavespace_engine", CallingConvention = CallingConvention.StdCall)] private static extern int AT_WS_setPlayer6dofConfidenceThreshold(int uid, float confidenceThreshold);
     [DllImport("at_wavespace_engine", CallingConvention = CallingConvention.StdCall)] private static extern int AT_WS_setPlayer6dofNumBufferedBlocks(int uid, int numBufferedBlocks);
     [DllImport("at_wavespace_engine", CallingConvention = CallingConvention.StdCall)] private static extern int AT_WS_setPlayer6dofMaxSources(int uid, int maxSources);
     [DllImport("at_wavespace_engine", CallingConvention = CallingConvention.StdCall)] private static extern int AT_WS_setPlayer6dofSearchGridResolution(int uid, float searchGridResolution);

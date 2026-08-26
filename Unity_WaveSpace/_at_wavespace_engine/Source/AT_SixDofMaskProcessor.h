@@ -28,13 +28,21 @@
  *     solver (no third-party linear algebra dependency), applied to the
  *     standard real 2N×2N block-matrix embedding of a complex N×N
  *     Hermitian matrix — see computeSignalSubspace()'s doc comment.
- *   - Multi-source detection over time: SAME mode-search history/hysteresis
- *     machinery as the previous GCC-PHAT implementation (pushEstimateAndUpdateModes,
- *     TrackedCandidate) — MUSIC's per-window peaks feed the identical
- *     rolling-history + temporal-confirmation pipeline, unchanged. A
- *     genuine source still repeats close to the same grid position window
- *     after window; a MUSIC pseudo-spectrum artifact (reverberation, finite-
- *     snapshot estimation noise) typically does not.
+ *   - Multi-source detection: INSTANTANEOUS, evaluated fresh within each
+ *     analysis window's own combined pseudo-spectrum — no cross-window
+ *     history or repeat-detection requirement (replaces an earlier
+ *     rolling-history/hysteresis design, removed: it assumed static
+ *     sources revisited window after window, which broke down for
+ *     intermittent or moving sources — see confidenceThreshold below).
+ *     A grid peak is accepted as a real source this window iff its
+ *     pseudo-spectrum value exceeds `confidenceThreshold` times the
+ *     window's own noise-floor estimate (the median pseudo-spectrum value
+ *     across the whole search grid — robust to the handful of genuine
+ *     peaks, since real sources are always a small minority of grid
+ *     points). A genuine source stands far above this floor (orders of
+ *     magnitude, in validation); a "filler" peak MUSIC must still produce
+ *     when fewer than `maxSources` sources are actually active barely
+ *     clears it.
  *   - Masking: per-channel gain from the "source must lie between listener
  *     and microphone" validity criterion, combined (max) across all
  *     detected sources. No source separation/extraction is performed —
@@ -127,20 +135,19 @@ namespace AT
         void setMaxSources(int maxSources);
         int getMaxSources() const { return m_maxSources.load(std::memory_order_relaxed); }
 
-        /// Grid resolution (metres) for the TEMPORAL mode-detection
-        /// histogram (rounds successive window estimates to detect
-        /// repeated positions over time) — NOT the spatial MUSIC search
-        /// grid, see setSearchGridResolution() for that. Default 0.5,
-        /// matching the default search grid so repeated detections of the
-        /// same physical source (which MUSIC always snaps to the nearest
-        /// search-grid point) bucket together cleanly.
-        void setGridRes(float gridRes);
-        float getGridRes() const { return m_gridRes.load(std::memory_order_relaxed); }
-
-        /// Minimum number of matching estimates in the rolling history for a
-        /// mode to be accepted as a real source. Default 4.
-        void setMinBlockCount(int minBlockCount);
-        int getMinBlockCount() const { return m_minBlockCount.load(std::memory_order_relaxed); }
+        /// Minimum ratio between a grid peak's pseudo-spectrum value and the
+        /// window's own noise-floor estimate (median pseudo-spectrum value
+        /// across the whole search grid) for that peak to be accepted as a
+        /// real source THIS window — see the file doc comment above for the
+        /// full rationale. Replaces the earlier grid-resolution-based
+        /// temporal bucketing (removed) now that detection is instantaneous.
+        /// Higher = stricter (fewer false positives, may miss weak/distant
+        /// sources); lower = more permissive. Needs empirical tuning against
+        /// real recordings — no single default suits every array/scene, so
+        /// treat this starting value (10) as a first guess, not a validated
+        /// constant.
+        void setConfidenceThreshold(float confidenceThreshold);
+        float getConfidenceThreshold() const { return m_confidenceThreshold.load(std::memory_order_relaxed); }
 
         /// Number of audio callback blocks accumulated into one localization
         /// analysis window. For MUSIC, this must be large enough to yield
@@ -306,46 +313,15 @@ namespace AT
         void computeSignalSubspace(const std::vector<std::complex<float>>& K, int numSources,
                                     std::vector<std::vector<std::complex<float>>>& outSignalSubspace) const;
 
-        void pushEstimateAndUpdateModes(const SixDofSourcePosition& estimate);
-
         /**
-         * @brief One candidate source tracked ACROSS mode-detection cycles,
-         * for the per-source temporal hysteresis (see pushEstimateAndUpdateModes).
-         *
-         * Distinct from the global Valid/Stale/Bypass state machine: that one
-         * handles TOTAL detection failure (zero sources for many cycles this
-         * one smooths a single noisy cycle for an INDIVIDUAL source (e.g. its
-         * mode count grazing min_block_count and dipping below it for one
-         * cycle) so it doesn't vanish from/reappear in m_detectedSources
-         * instantly — diagnosed via console logs as the cause of a brief,
-         * audible "dropout": source count sequence ...2,2,2,1,2,2,2... for a
-         * single missed cycle.
+         * @brief Commits this window's accepted sources (already filtered by
+         * the confidence test in runLocalizationOnWindow()) to
+         * m_detectedSources, and drives the Valid/Stale/Bypass state machine
+         * (see that enum's doc comment) — the only thing left that persists
+         * ACROSS windows, and only for total-detection-failure recovery, not
+         * per-source acceptance.
          */
-        struct TrackedCandidate
-        {
-            SixDofSourcePosition pos;
-            int  presentStreak = 0;   ///< consecutive cycles seen (for promotion to confirmed)
-            int  absentStreak  = 0;   ///< consecutive cycles missing (for demotion/removal)
-            bool confirmed     = false;
-        };
-        std::vector<TrackedCandidate> m_trackedCandidates;
-
-        /// A brand-new candidate must be seen this many consecutive cycles
-        /// before being exposed via m_detectedSources — filters one-off
-        /// phantom "compromise" positions that occasionally slip past the
-        /// fit-residual filter (observed: a spurious 3rd source appearing
-        /// for a few cycles near the end of a real test log).
-        static constexpr int SOURCE_CONFIRM_CYCLES = 2;
-
-        /// An already-confirmed source can be missing this many consecutive
-        /// cycles before being dropped — the actual fix for the single-cycle
-        /// dropout described above.
-        static constexpr int SOURCE_GRACE_CYCLES = 2;
-
-        /// Distance threshold for matching a new-cycle estimate to an
-        /// existing tracked candidate (metres). Same scale as the mode
-        /// bucket separation used historically in the Python prototype.
-        static constexpr float SOURCE_MATCH_DIST = 0.5f;
+        void finalizeDetectedSources(const std::vector<SixDofSourcePosition>& acceptedSources);
 
         // ---- Mask logging (debug, "on change" only) -----------------------
         // See updateTargetGains(): logs the per-source/per-channel mask
@@ -379,8 +355,7 @@ namespace AT
         // --------------------------------------------------------------
         std::atomic<bool>  m_enabled              { false };
         std::atomic<int>   m_maxSources           { 3 };
-        std::atomic<float> m_gridRes              { 0.5f };
-        std::atomic<int>   m_minBlockCount        { 4 };
+        std::atomic<float> m_confidenceThreshold  { 10.0f };
         std::atomic<int>   m_numBufferedBlocks    { 8 };
         std::atomic<float> m_searchGridResolution { 0.5f };
         std::atomic<int>   m_maxBins              { 8 };
@@ -409,27 +384,6 @@ namespace AT
         std::condition_variable         m_pendingWindowCv;
 
         // --------------------------------------------------------------
-        // Rolling history of position estimates (background thread only,
-        // multiple entries can be pushed per analysis window now — up to
-        // maxSources peaks per MUSIC pass, vs. exactly one per window for
-        // the previous GCC-PHAT implementation) — mode detection runs over
-        // this, adapting the Python prototype's "per-block estimates list"
-        // to streaming.
-        // --------------------------------------------------------------
-        
-        // HISTORY_SIZE must grow with MAX_SOURCES: unlike GCC-PHAT (one estimate per
-        // window), MUSIC pushes up to MAX_SOURCES peaks per window — a fixed
-        // HISTORY_SIZE therefore caps the number of CYCLES actually retained to
-        // HISTORY_SIZE/MAX_SOURCES, which becomes too low as MAX_SOURCES grows,
-        // making min_block_count unreachable for any source. This multiplier (x32)
-        // restores the original history depth (32 cycles) regardless of MAX_SOURCES.
-        static constexpr int HISTORY_SIZE = MAX_SOURCES * 32;
-        
-        std::vector<SixDofSourcePosition> m_estimateHistory;
-        int m_historyWritePos = 0;
-        int m_historyCount    = 0;
-
-        // --------------------------------------------------------------
         // Detected sources (background thread writes, audio thread reads)
         // --------------------------------------------------------------
         mutable std::mutex m_sourcesMutex;
@@ -438,7 +392,7 @@ namespace AT
         // --------------------------------------------------------------
         // Detection failure protection.
         //
-        // If a localization pass finds zero sources above min_block_count
+        // If a localization pass finds zero sources above confidenceThreshold
         // (e.g. near-silence, or a genuinely empty analysis window), we do
         // NOT immediately blank the mask — that would click/mute on every
         // brief gap. Instead:
