@@ -13,7 +13,8 @@
 #include "AT_SpatConfig.h"
 
 #if JUCE_WINDOWS
-#include <windows.h>   // HKEY, RegOpenKeyExW, RegEnumKeyExW, RegCloseKey
+#include <windows.h>   // HKEY, RegOpenKeyExW, RegEnumKeyExW, RegGetValueW, RegCloseKey
+#include <string>
 #endif
 
 namespace AT
@@ -105,8 +106,8 @@ namespace AT
                 info.typeName          = typeName;
                 info.maxInputChannels  = -1;   // lazy-loaded in filterUnavailableDevices
                 info.maxOutputChannels = -1;
-                out.push_back(std::move(info));
                 LOG("[AudioManager]   + " << info.name << " (" << typeName << ")");
+                out.push_back(std::move(info));   // log BEFORE moving (moved-from string is empty)
             }
         }
         catch (const std::exception& e) { LOG_WARNING("[AudioManager] " << typeName << ": " << e.what()); }
@@ -131,6 +132,53 @@ namespace AT
         #endif
         return t;
     }
+
+   #if JUCE_WINDOWS && JUCE_ASIO
+    // ── Helper: check that an ASIO driver's DLL is present on disk ────────────
+    // Registry-only check (no COM loading, no driver code executed), so it stays
+    // as fast as the registry enumeration itself.  Each subkey of
+    // HKLM\SOFTWARE\ASIO holds a "CLSID" value; the matching
+    // HKCR\CLSID\{...}\InprocServer32 default value is the driver DLL path.
+    // Filters out orphaned entries left behind by uninstalled drivers.
+    // NOTE: this does NOT detect a driver whose hardware is unplugged — that
+    // can only be known by loading the driver (done lazily in
+    // getDetailedDeviceInfo() when the user selects the device).
+    //
+    // Deliberately conservative: an entry is rejected only when the evidence is
+    // unambiguous (no CLSID, no COM registration, or an absolute DLL path that
+    // does not exist).  Anything unusual (relative path, unreadable value) is
+    // kept — hiding a working device is worse than listing a stale one.
+    static bool asioDriverDllExists(HKEY asioKey, const wchar_t* driverName)
+    {
+        wchar_t clsid[64];
+        DWORD   size = sizeof(clsid);
+        if (RegGetValueW(asioKey, driverName, L"CLSID", RRF_RT_REG_SZ,
+                         nullptr, clsid, &size) != ERROR_SUCCESS)
+            return false;   // no CLSID → JUCE could not load it either
+
+        const std::wstring serverKey = L"CLSID\\" + std::wstring(clsid) + L"\\InprocServer32";
+
+        HKEY serverHKey;
+        if (RegOpenKeyExW(HKEY_CLASSES_ROOT, serverKey.c_str(), 0, KEY_READ, &serverHKey) != ERROR_SUCCESS)
+            return false;   // COM class not registered → orphaned ASIO entry
+
+        // RRF_RT_REG_SZ also accepts REG_EXPAND_SZ and expands it (e.g. %SystemRoot%).
+        wchar_t dllPath[MAX_PATH] = {};
+        size = sizeof(dllPath);
+        const LONG res = RegGetValueW(serverHKey, nullptr, nullptr, RRF_RT_REG_SZ,
+                                      nullptr, dllPath, &size);
+        RegCloseKey(serverHKey);
+
+        if (res != ERROR_SUCCESS)
+            return true;    // unreadable default value — keep it, resolved lazily
+
+        const juce::String path(dllPath);
+        if (!juce::File::isAbsolutePath(path))
+            return true;    // bare DLL name resolved via the search path — keep it
+
+        return juce::File(path).existsAsFile();
+    }
+   #endif
 
     void AudioManager::scanAndCacheDevices(bool includeASIO)
     {
@@ -165,8 +213,11 @@ namespace AT
         if (includeASIO)
         {
             LOG("[AudioManager] Scanning ASIO drivers from registry...");
+            // NOTE: the backslash MUST be escaped.  "SOFTWARE\ASIO" (single
+            // backslash) is an unknown escape sequence: MSVC silently turns it
+            // into "SOFTWAREASIO" (warning C4129) and no ASIO driver is ever found.
             HKEY asioKey;
-            if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SOFTWARE\ASIO",
+            if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\ASIO",
                               0, KEY_READ, &asioKey) == ERROR_SUCCESS)
             {
                 wchar_t driverName[256];
@@ -176,14 +227,24 @@ namespace AT
                                      driverName, &nameLen,
                                      nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS)
                 {
+                    const std::string name = juce::String(driverName).toStdString();
+                    nameLen = 256;   // reset for the next RegEnumKeyExW call
+
+                    // Skip orphaned entries (driver uninstalled, DLL gone).
+                    // Registry-only check — no driver is loaded here.
+                    if (!asioDriverDllExists(asioKey, driverName))
+                    {
+                        LOG("[AudioManager]   - " << name << " (ASIO, driver not installed — skipped)");
+                        continue;
+                    }
+
                     DeviceInfo info;
-                    info.name              = juce::String(driverName).toStdString();
+                    info.name              = name;
                     info.typeName          = "ASIO";
-                    info.maxInputChannels  = -1;
+                    info.maxInputChannels  = -1;   // resolved lazily (getDetailedDeviceInfo)
                     info.maxOutputChannels = -1;
                     m_cachedDevices.push_back(std::move(info));
-                    LOG("[AudioManager]   + " << info.name << " (ASIO)");
-                    nameLen = 256;
+                    LOG("[AudioManager]   + " << name << " (ASIO)");
                 }
                 RegCloseKey(asioKey);
             }
@@ -245,7 +306,15 @@ namespace AT
 
     void AudioManager::refreshDevices()
     {
+        // Synchronous rescan used by setup().  Must include ASIO on Windows,
+        // otherwise the cache is rebuilt without the ASIO entries right before
+        // the device is opened.  Cost is unchanged: ASIO names come from the
+        // registry, no driver is loaded.  macOS: CoreAudio only, as before.
+       #if JUCE_WINDOWS && JUCE_ASIO
+        scanAndCacheDevices(true);
+       #else
         scanAndCacheDevices(false);
+       #endif
     }
 
     bool AudioManager::isDeviceScanComplete() const
@@ -565,7 +634,39 @@ namespace AT
         // thread initialise() itself will use — reproduces that same "healthy"
         // state on every setup() call, not just after a manual reselect.
         juce::MessageManager::getInstance()->setCurrentThreadAsMessageThread();
+
+        // Remember the channel count already resolved for the requested device
+        // (by filterUnavailableDevices() or getDetailedDeviceInfo()) — the rescan
+        // below resets every entry to -1, which would otherwise disable the
+        // channel-count guard further down.
+        int knownMaxOutputChannels = -1;
+        {
+            std::lock_guard<std::mutex> lock(m_deviceCacheMutex);
+            for (const auto& dev : m_cachedDevices)
+            {
+                if (deviceName.empty() || dev.name == deviceName)
+                {
+                    knownMaxOutputChannels = dev.maxOutputChannels;
+                    break;
+                }
+            }
+        }
+
         refreshDevices();
+
+        // Re-inject the known channel count into the fresh cache entry.
+        if (knownMaxOutputChannels > 0)
+        {
+            std::lock_guard<std::mutex> lock(m_deviceCacheMutex);
+            for (auto& dev : m_cachedDevices)
+            {
+                if (deviceName.empty() || dev.name == deviceName)
+                {
+                    dev.maxOutputChannels = knownMaxOutputChannels;
+                    break;
+                }
+            }
+        }
 
         // Store the binaural flag and virtual speaker count before configuring the engine
         m_isBinauralVirtualization = isBinauralVirtualization;

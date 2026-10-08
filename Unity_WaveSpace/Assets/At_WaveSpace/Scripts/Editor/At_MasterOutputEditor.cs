@@ -22,11 +22,14 @@ public class AudioDeviceInfo
 {
     public int    index;
     public string name;
+    /// <summary>Driver family reported by the native scan: "Windows Audio", "ASIO" or "CoreAudio".</summary>
+    public string typeName;
+    /// <summary>-1 = not queried yet (lazy, typically ASIO), 0 = unavailable, &gt;0 = channel count.</summary>
     public int    maxInputChannels;
     public int    maxOutputChannels;
 
     public override string ToString() =>
-        $"[{index}] {name} ({maxInputChannels} in, {maxOutputChannels} out)";
+        $"[{index}] {name} [{typeName}] ({maxInputChannels} in, {maxOutputChannels} out)";
 }
 #endregion
 
@@ -44,7 +47,8 @@ public class At_MasterOutputEditor : Editor
     #region Private State
     private int  selectedDeviceIndex = 0;
     private List<AudioDeviceInfo> availableDevices = new List<AudioDeviceInfo>();
-    private string[] devices;
+    private string[] devices;        // raw device names (stored / passed to AT_WS_setup)
+    private string[] deviceLabels;   // popup labels (name + driver type on Windows)
 
     private At_OutputState  outputState = new At_OutputState();
     private At_MasterOutput masterOutput;
@@ -220,11 +224,34 @@ public class At_MasterOutputEditor : Editor
         }
 
         availableDevices = cachedDevices;
-        if (availableDevices != null)
+        BuildDeviceArrays();
+    }
+
+    /// <summary>
+    /// Rebuilds the parallel arrays used by the device popup:
+    ///   devices      — raw device names (what is stored in outputState and passed to AT_WS_setup)
+    ///   deviceLabels — what the popup displays.
+    /// The driver type is appended to the label only when several driver families
+    /// are present (Windows: "Windows Audio" + "ASIO"). On macOS (CoreAudio only)
+    /// labels are identical to names, so the Inspector looks exactly as before.
+    /// </summary>
+    private void BuildDeviceArrays()
+    {
+        if (availableDevices == null) { devices = null; deviceLabels = null; return; }
+
+        bool showType = false;
+        for (int i = 1; i < availableDevices.Count; i++)
+            if (availableDevices[i].typeName != availableDevices[0].typeName) { showType = true; break; }
+
+        devices      = new string[availableDevices.Count];
+        deviceLabels = new string[availableDevices.Count];
+        for (int i = 0; i < availableDevices.Count; i++)
         {
-            devices = new string[availableDevices.Count];
-            for (int i = 0; i < availableDevices.Count; i++)
-                devices[i] = availableDevices[i].name;
+            AudioDeviceInfo d = availableDevices[i];
+            devices[i]      = d.name;
+            deviceLabels[i] = (showType && !string.IsNullOrEmpty(d.typeName))
+                ? $"{d.name}  [{d.typeName}]"
+                : d.name;
         }
     }
 
@@ -263,12 +290,17 @@ public class At_MasterOutputEditor : Editor
                 int maxIn = 0, maxOut = 0;
                 if (AT_WS_getCachedDeviceInfo(i, nameBuffer, typeBuffer, ref maxIn, ref maxOut) != AUDIO_PLUGIN_OK)
                     continue;
-                if (maxOut <= 0)
+                // 0  = validated as unavailable → hide.
+                // -1 = not queried yet (ASIO drivers are resolved lazily, on selection,
+                //      to keep the scan fast) → keep; GetSelectedDeviceMaxOutputChannels()
+                //      performs the detailed query when the device is selected.
+                if (maxOut == 0)
                     continue;
                 availableDevices.Add(new AudioDeviceInfo
                 {
                     index             = i,
                     name              = Marshal.PtrToStringAnsi(nameBuffer),
+                    typeName          = Marshal.PtrToStringAnsi(typeBuffer),
                     maxInputChannels  = maxIn,
                     maxOutputChannels = maxOut
                 });
@@ -390,10 +422,9 @@ public class At_MasterOutputEditor : Editor
         {
             devicesNeedRefresh = true;
             RefreshDeviceList();
-            if (availableDevices != null)
+            BuildDeviceArrays();
+            if (devices != null)
             {
-                devices = new string[availableDevices.Count];
-                for (int i = 0; i < availableDevices.Count; i++) devices[i] = availableDevices[i].name;
                 selectedDeviceIndex = 0;
                 for (int i = 0; i < devices.Length; i++)
                     if (devices[i] == outputState.audioDeviceName) { selectedDeviceIndex = i; break; }
@@ -414,7 +445,8 @@ public class At_MasterOutputEditor : Editor
             for (int i = 0; i < devices.Length; i++)
                 if (devices[i] == outputState.audioDeviceName) { selectedDeviceIndex = i; break; }
 
-            int newIndex = EditorGUILayout.Popup(selectedDeviceIndex, devices);
+            string[] labels = (deviceLabels != null && deviceLabels.Length == devices.Length) ? deviceLabels : devices;
+            int newIndex = EditorGUILayout.Popup(selectedDeviceIndex, labels);
             if (newIndex != selectedDeviceIndex) { selectedDeviceIndex = newIndex; shouldSave = true; }
 
             outputState.audioDeviceName = devices[selectedDeviceIndex];
