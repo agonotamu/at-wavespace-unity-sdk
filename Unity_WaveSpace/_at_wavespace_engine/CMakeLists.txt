@@ -127,6 +127,21 @@ target_compile_definitions(at_wavespace_engine
 )
 
 # ==============================================================================
+# Instrumentation perf temps réel (tools/perf/PERF.md)
+#   AT_SPAT_PERF_PROBE    : active At_PerfProbe.h et les exports AT_WS_*Perf*.
+#                           OFF = binaire inchangé (les macros AT_PERF_* sont vides).
+#   AT_SPAT_COPY_TO_UNITY : copie post-build vers Assets/At_WaveSpace/Plugins.
+#                           Mis à OFF par les presets « probe » pour ne jamais
+#                           remplacer la DLL de Unity par une DLL instrumentée.
+# ==============================================================================
+option(AT_SPAT_PERF_PROBE    "Instrumentation perf temps reel (At_PerfProbe.h)" OFF)
+option(AT_SPAT_COPY_TO_UNITY "Copier la bibliotheque dans Assets/At_WaveSpace/Plugins apres le build" ON)
+
+if(AT_SPAT_PERF_PROBE)
+    target_compile_definitions(at_wavespace_engine PRIVATE AT_SPAT_PERF_PROBE=1)
+endif()
+
+# ==============================================================================
 # Visibilité des symboles
 #
 # PROBLÈME : Unity embarque sa propre instance de JUCE. Sans restriction de
@@ -187,7 +202,6 @@ target_link_libraries(at_wavespace_engine
         juce::juce_audio_devices
         juce::juce_audio_formats
         juce::juce_audio_processors
-        juce::juce_audio_processors_headless
         juce::juce_audio_utils
         juce::juce_core
         juce::juce_data_structures
@@ -222,7 +236,9 @@ target_link_libraries(at_wavespace_engine
 # ==============================================================================
 set(UNITY_PLUGINS_BASE "${CMAKE_SOURCE_DIR}/../Assets/At_WaveSpace/Plugins")
 
-if(APPLE)
+if(NOT AT_SPAT_COPY_TO_UNITY)
+    set(UNITY_OUTPUT "(copie desactivee : AT_SPAT_COPY_TO_UNITY=OFF)")
+elseif(APPLE)
     set(UNITY_OUTPUT "${UNITY_PLUGINS_BASE}/MacOSX")
 
     add_custom_command(TARGET at_wavespace_engine POST_BUILD
@@ -297,6 +313,7 @@ if(APPLE)
     message(STATUS "  Deployment     : macOS ${CMAKE_OSX_DEPLOYMENT_TARGET}")
 endif()
 message(STATUS "  Unity output   : ${UNITY_OUTPUT}")
+message(STATUS "  Perf probe     : ${AT_SPAT_PERF_PROBE}")
 message(STATUS "------------------------------------------------------------")
 
 # ==============================================================================
@@ -329,6 +346,7 @@ if(BUILD_CONSOLE_APP)
             JUCE_STRICT_REFCOUNTEDPOINTER=1
             JUCE_STANDALONE_APPLICATION=1
             $<$<BOOL:${WIN32}>:JUCE_ASIO=1>
+            $<$<BOOL:${AT_SPAT_PERF_PROBE}>:AT_SPAT_PERF_PROBE=1>
     )
 
     target_compile_features(TestAppConsole PRIVATE cxx_std_17)
@@ -348,7 +366,6 @@ if(BUILD_CONSOLE_APP)
             juce::juce_audio_devices
             juce::juce_audio_formats
             juce::juce_audio_processors
-            juce::juce_audio_processors_headless
             juce::juce_audio_utils
             juce::juce_core
             juce::juce_data_structures

@@ -820,6 +820,28 @@ EXPORT_API int CALL_CONV AT_WS_setNearFieldCorrectionRRef(float rRef,
                                                            float headRadius);
 
 
+// ============================================================================
+// PERFORMANCE PROBE (only when the library is built with AT_SPAT_PERF_PROBE)
+// See tools/perf/PERF.md. Lock-free: safe to poll while audio is running.
+// ============================================================================
+#if defined(AT_SPAT_PERF_PROBE)
+
+/**
+ * @brief Copies the current probe statistics.
+ * @param outStats  Pointer to an at_perf::StatsC (see At_PerfProbe.h)
+ * @param sizeBytes sizeof(at_perf::StatsC) on the caller side
+ * @return AUDIO_PLUGIN_OK, or AUDIO_PLUGIN_ERROR if the buffer is null or too small
+ */
+EXPORT_API int CALL_CONV AT_WS_getPerfStats(void* outStats, int sizeBytes);
+
+/** @brief Clears the statistics at the start of the next audio callback. */
+EXPORT_API int CALL_CONV AT_WS_resetPerfStats();
+
+/** @brief Sets the bisection kill switches (bitmask of at_perf::Option). */
+EXPORT_API int CALL_CONV AT_WS_setPerfOptions(unsigned int options);
+
+#endif
+
 #ifdef __cplusplus
 }
 #endif

@@ -572,6 +572,21 @@ namespace AT
         /// Main thread waits on this before calling stop().
         juce::WaitableEvent m_fadeCompletedEvent;
 
+        // ── Source swap vs. audio thread ─────────────────────────────────────────
+        // setFilePath(), prepareToPlay() and releaseResources() (main thread) replace or
+        // release the reader / resampler / temp buffer that updateForNextBlock() and
+        // processAndAdd() use on the audio thread or a worker. Without this lock the audio
+        // side could call juce::ResamplingAudioSource::getNextAudioBlock() on a resampler
+        // that is not prepared yet (integer division by zero in JUCE) or already freed —
+        // a crash seen when adding a player while audio is running.
+        //   main thread  : blocking lock around the swap;
+        //   audio/worker : try-lock only — the player is skipped for that block.
+        juce::SpinLock m_sourceLock;
+
+        /// True when updateForNextBlock() filled m_puTempBuffer for the current block.
+        /// Guarded by m_sourceLock.
+        bool m_blockValid = false;
+
         /// True while the fade ramp is in progress (audio thread only).
         bool m_isFadingOut = false;
 

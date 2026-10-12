@@ -12,6 +12,7 @@
 #include <math.h>
 #include "UnityLogger.h"
 #include "AT_SpatConfig.h"
+#include "At_PerfProbe.h"   // macros AT_PERF_* : vides sans AT_SPAT_PERF_PROBE
 
 #define PI 3.1415926535897932384626433832795
 
@@ -189,8 +190,9 @@ namespace AT
         // value and the existing m_isWfsSpeakerMask==false fallback below) means
         // there is nothing to "correct" once real data arrives: the FIRST real
         // computation already starts from accurate geometry.
-        if (m_pSpatializationEngine != nullptr
-            && !m_pSpatializationEngine->hasReceivedFirstListenerTransform())
+        if ((m_pSpatializationEngine != nullptr
+             && !m_pSpatializationEngine->hasReceivedFirstListenerTransform())
+            || AT_PERF_OPTION(OPT_BYPASS_MASK_NORM))
         {
             m_isInside              = false;
             m_insideBlend           = 0.0f;
@@ -386,7 +388,7 @@ namespace AT
             
             if (m_pSpatializationEngine != nullptr)
             {
-                m_pSpatializationEngine->getSmoothedVirtualSpeakerPosition(i, speakerPosX, speakerPosY, speakerPosZ);
+                m_pSpatializationEngine->getBlockInterpolatedVirtualSpeakerPosition(i, m_blockFraction, speakerPosX, speakerPosY, speakerPosZ);
             }
             else
             {
@@ -577,7 +579,7 @@ namespace AT
         {
             float speakerPosX = 0.0f, speakerPosY = 0.0f, speakerPosZ = 0.0f;
             if (m_pSpatializationEngine != nullptr)
-                m_pSpatializationEngine->getSmoothedVirtualSpeakerPosition(i, speakerPosX, speakerPosY, speakerPosZ);
+                m_pSpatializationEngine->getBlockInterpolatedVirtualSpeakerPosition(i, m_blockFraction, speakerPosX, speakerPosY, speakerPosZ);
             else
             {
                 speakerPosX = m_virtualSpeakerPositions[i][0];
@@ -632,11 +634,21 @@ namespace AT
 
     void Spatializer::advanceSourceSmoothers()
     {
+        // Position of this sample inside the block (1 = block end).
+        ++m_sampleInBlock;
+        m_blockFraction = (m_blockNumSamples > 0 && m_sampleInBlock < m_blockNumSamples)
+                          ? static_cast<float>(m_sampleInBlock) / static_cast<float>(m_blockNumSamples)
+                          : 1.0f;
+
         m_sourcePosX = m_sourcePosXSmoother.getNextValue();
         m_sourcePosZ = m_sourcePosZSmoother.getNextValue();
         
         setIsInsideAndUpdateSpeakerMask();
+#if defined(AT_SPAT_PERF_PROBE)
+        perfUpdateWfsGainAndDelay();
+#else
         udpateWfsGainAndDelay();
+#endif
 
         // Once per sample (this function is the WFS path's single per-sample
         // entry point — spatialize() itself is called once per OUTPUT CHANNEL,
@@ -648,17 +660,50 @@ namespace AT
         m_smoothedNumActiveSpeakerInMask = advanceAndGetSmoothedNumActiveSpeakerInMask();
     }
 
+#if defined(AT_SPAT_PERF_PROBE)
+    void Spatializer::perfUpdateWfsGainAndDelay()
+    {
+        if (AT_PERF_OPTION(OPT_FREEZE_WFS_PARAMS) && m_perfWfsParamsComputedOnce)
+            return;
+
+        udpateWfsGainAndDelay();
+        m_perfWfsParamsComputedOnce = true;
+    }
+
+    void Spatializer::perfAdvanceSourceSmoothersPerBlock(int sampleIndex, int numSamples)
+    {
+        if (sampleIndex == 0)
+        {
+            m_blockFraction = 1.0f;
+            // Source position at the end of the block, so the ramps keep their real duration.
+            m_sourcePosX = m_sourcePosXSmoother.skip(numSamples);
+            m_sourcePosZ = m_sourcePosZSmoother.skip(numSamples);
+
+            setIsInsideAndUpdateSpeakerMask();
+            perfUpdateWfsGainAndDelay();
+
+            // udpateWfsGainAndDelay() advanced these three by one sample only.
+            if (numSamples > 1)
+            {
+                m_wfsMaxDelaySmoother.skip(numSamples - 1);
+                m_wfsMinDelaySmoother.skip(numSamples - 1);
+                m_insideBlendSmoother.skip(numSamples - 1);
+            }
+        }
+
+        m_smoothedNumActiveSpeakerInMask = advanceAndGetSmoothedNumActiveSpeakerInMask();
+    }
+#endif
+
     float Spatializer::spatialize(float inputSample, int indexChannel, bool updateReadPointer)
     {
         // Check channel index validity
         if (indexChannel < 0 || indexChannel >= m_numOutputChannels)
             return 0.0f;
         
-        // Advance global smoothers once per sample (first channel only)
-        if (indexChannel == 0 && m_pSpatializationEngine != nullptr)
-        {
-            m_pSpatializationEngine->advanceGlobalSmoothers();
-        }
+        // The engine-wide smoothers are advanced by the engine itself, once per block
+        // (SpatializationEngine::advanceGlobalSmoothersForBlock()). Nothing here may write
+        // engine state: this runs on worker threads, one per player.
         
         // Get the smoothed speaker mask value for this channel
         float smoothedMask = m_wfsSpeakerMaskSmoother[indexChannel].getNextValue();

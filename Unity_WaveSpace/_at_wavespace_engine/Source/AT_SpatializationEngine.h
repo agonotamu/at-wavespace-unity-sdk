@@ -374,6 +374,27 @@ namespace AT
         void getSmoothedListenerPosition(float& outX, float& outY, float& outZ) const;
         void getSmoothedListenerForward(float& outX, float& outY, float& outZ) const;
         void getSmoothedVirtualSpeakerPosition(int speakerIndex, float& outX, float& outY, float& outZ) const;
+
+        /**
+         * @brief Virtual speaker position at fraction t (0 = block start, 1 = block end) of the
+         *        block being rendered.
+         *
+         * Read-only: the engine advances the global smoothers once per block, on the audio
+         * thread, before any player runs (advanceGlobalSmoothersForBlock()). Players only
+         * interpolate between the two snapshots, so several of them can run on worker threads
+         * at the same time without sharing any mutable state.
+         */
+        void getBlockInterpolatedVirtualSpeakerPosition(int speakerIndex, float t, float& outX, float& outY, float& outZ) const
+        {
+            if (speakerIndex < 0 || speakerIndex >= m_numVirtualSpeakers || speakerIndex >= MAX_VIRTUAL_SPEAKERS)
+            {
+                outX = outY = outZ = 0.0f;
+                return;
+            }
+            outX = m_blockStartSpeakerPosX[speakerIndex] + (m_smoothedSpeakerPosX[speakerIndex] - m_blockStartSpeakerPosX[speakerIndex]) * t;
+            outY = m_blockStartSpeakerPosY[speakerIndex] + (m_smoothedSpeakerPosY[speakerIndex] - m_blockStartSpeakerPosY[speakerIndex]) * t;
+            outZ = m_blockStartSpeakerPosZ[speakerIndex] + (m_smoothedSpeakerPosZ[speakerIndex] - m_blockStartSpeakerPosZ[speakerIndex]) * t;
+        }
         float getSmoothedAzimuthForSpeaker(int speakerIndex) const;
 
         /**
@@ -852,6 +873,15 @@ namespace AT
         float m_smoothedSpeakerPosZ[MAX_VIRTUAL_SPEAKERS];
         float m_smoothedSpeakerAzimuth[MAX_VIRTUAL_SPEAKERS];
 
+        /// Smoothed speaker positions at the start of the block being rendered — the end-of-block
+        /// values are m_smoothedSpeakerPosX/Y/Z. See getBlockInterpolatedVirtualSpeakerPosition().
+        float m_blockStartSpeakerPosX[MAX_VIRTUAL_SPEAKERS] = {};
+        float m_blockStartSpeakerPosY[MAX_VIRTUAL_SPEAKERS] = {};
+        float m_blockStartSpeakerPosZ[MAX_VIRTUAL_SPEAKERS] = {};
+
+        /// Advances every global smoother by one block. Audio thread only, once per block.
+        void advanceGlobalSmoothersForBlock(int numSamples);
+
         // ============================================================================
         // MULTITHREADING
         // ============================================================================
@@ -861,6 +891,23 @@ namespace AT
         std::vector<std::unique_ptr<juce::AudioBuffer<float>>> m_playerBuffers;
         std::atomic<bool> m_useMultithreading{false};
         static constexpr int MIN_PLAYERS_FOR_THREADING = 3;
+
+        // ── Per-player jobs ──────────────────────────────────────────────────────
+        // Each player of the block is claimed exactly once (PENDING → RUNNING, by
+        // compare-exchange) by whichever thread gets there first: a pool worker or
+        // the audio thread itself, which works through the list instead of waiting.
+        // Slots are DONE between blocks, so a job left in the pool queue can never
+        // touch a player outside a block. Fixed size: nothing is allocated or freed
+        // while a late job might still read it.
+        static constexpr int MAX_THREADED_PLAYERS = 256;
+        static constexpr int PLAYER_JOB_PENDING = 0;
+        static constexpr int PLAYER_JOB_RUNNING = 1;
+        static constexpr int PLAYER_JOB_DONE    = 2;
+        std::atomic<int> m_playerJobState[MAX_THREADED_PLAYERS];
+        int m_jobNumSamples = 0;   ///< written before the slots are set to PENDING
+
+        /// Claims and renders player i into its scratch buffer. False if already claimed.
+        bool tryProcessPlayerJob(int i);
 
         // ============================================================================
         // THREAD-SAFE MODE SWITCHING

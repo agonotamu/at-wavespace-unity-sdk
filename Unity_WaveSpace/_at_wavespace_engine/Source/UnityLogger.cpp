@@ -13,6 +13,7 @@
  */
 
 #include "UnityLogger.h"
+#include "At_PerfProbe.h"   // macros AT_PERF_* : vides sans AT_SPAT_PERF_PROBE
 
 
 UnityLogger& UnityLogger::getInstance()
@@ -29,6 +30,8 @@ void UnityLogger::setCallback(UnityLogCallback callback)
 
 void UnityLogger::log(const std::string& message)
 {
+    AT_PERF_AUDIO_LOG_GUARD();
+
     std::lock_guard<std::mutex> lock(m_mutex);
     
     if (m_callback != nullptr)
@@ -40,6 +43,8 @@ void UnityLogger::log(const std::string& message)
 
 void UnityLogger::logWarning(const std::string& message)
 {
+    AT_PERF_AUDIO_LOG_GUARD();
+
     std::lock_guard<std::mutex> lock(m_mutex);
     
     if (m_callback != nullptr)
@@ -51,6 +56,8 @@ void UnityLogger::logWarning(const std::string& message)
 
 void UnityLogger::logError(const std::string& message)
 {
+    AT_PERF_AUDIO_LOG_GUARD();
+
     std::lock_guard<std::mutex> lock(m_mutex);
     
     if (m_callback != nullptr)

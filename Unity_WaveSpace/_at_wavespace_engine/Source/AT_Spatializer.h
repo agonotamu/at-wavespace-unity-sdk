@@ -258,13 +258,28 @@ namespace AT
         /**
          * @brief update the target value for each parameters used by the spatialization algorithm (call once per block)
          */
+        /**
+         * @brief Call once per block, before the per-sample loop: resets the position inside
+         *        the block, used to interpolate the engine-wide speaker positions.
+         */
+        void beginBlock(int numSamples) { m_blockNumSamples = numSamples; m_sampleInBlock = 0; m_blockFraction = 0.0f; }
+
         void updateSourceParametersTarget();
 
         /**
          * @brief update smoothed value for each parameters used by the spatialization algorithm (call for each output sample)
          */
         void advanceSourceSmoothers();
-        
+
+#if defined(AT_SPAT_PERF_PROBE)
+        /**
+         * @brief Bisection only (OPT_WFS_PARAMS_PER_BLOCK): same job as advanceSourceSmoothers(),
+         *        but the speaker mask and the WFS delays/gains are recomputed on the first sample
+         *        of the block only. Delays then step once per block — not a fix, a measurement.
+         */
+        void perfAdvanceSourceSmoothersPerBlock(int sampleIndex, int numSamples);
+#endif
+
         /**
          * @brief Set the parent SpatializationEngine (needed for accessing smoothed global parameters)
          */
@@ -327,7 +342,17 @@ namespace AT
          */
         void updateCaptureSimulationGainAndDelay();
 
-        
+        int   m_blockNumSamples = 0;
+        int   m_sampleInBlock   = 0;
+        float m_blockFraction   = 1.0f;   ///< 0 = block start, 1 = block end
+
+#if defined(AT_SPAT_PERF_PROBE)
+        /// udpateWfsGainAndDelay(), skipped once computed when OPT_FREEZE_WFS_PARAMS is set.
+        void perfUpdateWfsGainAndDelay();
+        bool m_perfWfsParamsComputedOnce = false;
+#endif
+
+
         // ============================================================================
         // PRIVATE VARIABLES
         // ============================================================================

@@ -9,6 +9,7 @@
 #include <stdexcept>
 #include "UnityLogger.h"
 #include "AT_SpatConfig.h"
+#include "At_PerfProbe.h"   // macros AT_PERF_* : vides sans AT_SPAT_PERF_PROBE
 
 namespace AT
 {
@@ -19,6 +20,8 @@ namespace AT
         m_puPlayer->setSource(this);
 
         #ifdef AT_SPAT_ENABLE_MULTITHREADING
+            // Per-player (WFS) threading: players no longer write any engine-wide state
+            // (see advanceGlobalSmoothersForBlock()), so they can run in parallel.
             m_useMultithreading.store(true);
             LOG("Multithreading ENABLED (" << m_audioThreadPool.getNumThreads() << " threads)");
         #else
@@ -28,6 +31,9 @@ namespace AT
 
         m_isBinauralVirtualization = false;
         m_isSimpleBinauralSpat     = false;
+
+        for (auto& state : m_playerJobState)
+            state.store(PLAYER_JOB_DONE, std::memory_order_relaxed);
 
         m_recordingThread.startThread(juce::Thread::Priority::low);
 
@@ -605,6 +611,55 @@ namespace AT
         }
     }
 
+    void SpatializationEngine::advanceGlobalSmoothersForBlock(int numSamples)
+    {
+        m_smoothedListenerPosX     = m_listenerPosXSmoother.skip(numSamples);
+        m_smoothedListenerPosY     = m_listenerPosYSmoother.skip(numSamples);
+        m_smoothedListenerPosZ     = m_listenerPosZSmoother.skip(numSamples);
+        m_smoothedListenerForwardX = m_listenerForwardXSmoother.skip(numSamples);
+        m_smoothedListenerForwardY = m_listenerForwardYSmoother.skip(numSamples);
+        m_smoothedListenerForwardZ = m_listenerForwardZSmoother.skip(numSamples);
+
+        const int safeN = std::min(m_numVirtualSpeakers, MAX_VIRTUAL_SPEAKERS);
+        for (int i = 0; i < safeN; ++i)
+        {
+            m_blockStartSpeakerPosX[i] = m_smoothedSpeakerPosX[i];
+            m_blockStartSpeakerPosY[i] = m_smoothedSpeakerPosY[i];
+            m_blockStartSpeakerPosZ[i] = m_smoothedSpeakerPosZ[i];
+
+            m_smoothedSpeakerPosX[i]    = m_virtualSpeakerPosXSmoother[i].skip(numSamples);
+            m_smoothedSpeakerPosY[i]    = m_virtualSpeakerPosYSmoother[i].skip(numSamples);
+            m_smoothedSpeakerPosZ[i]    = m_virtualSpeakerPosZSmoother[i].skip(numSamples);
+            m_smoothedSpeakerAzimuth[i] = m_virtualSpeakerAzimuthSmoother[i].skip(numSamples);
+        }
+    }
+
+    bool SpatializationEngine::tryProcessPlayerJob(int i)
+    {
+        int expected = PLAYER_JOB_PENDING;
+        if (!m_playerJobState[i].compare_exchange_strong(expected, PLAYER_JOB_RUNNING,
+                                                         std::memory_order_acq_rel))
+            return false;
+
+        // m_playerSnapshot, m_playerBuffers and m_jobNumSamples are immutable while any slot
+        // of the block is PENDING or RUNNING.
+        AT::SpatPlayer* player = m_playerSnapshot[i];
+        player->updateForNextBlock();
+
+        if (player->isPlaying() && player->hasFileLoaded())
+        {
+            juce::AudioSourceChannelInfo tempInfo;
+            tempInfo.buffer      = m_playerBuffers[i].get();
+            tempInfo.startSample = 0;
+            tempInfo.numSamples  = m_jobNumSamples;
+            player->processAndAdd(tempInfo, m_smoothedListenerPosX, m_smoothedListenerPosY, m_smoothedListenerPosZ);
+        }
+
+        m_playerJobState[i].store(PLAYER_JOB_DONE, std::memory_order_release);
+        m_playersProcessed.fetch_add(1, std::memory_order_release);
+        return true;
+    }
+
     void SpatializationEngine::processPlayersWFS(const juce::AudioSourceChannelInfo& bufferToFill)
     {
         // m_playerSnapshot was populated at the start of getNextAudioBlock() under SpinLock.
@@ -634,8 +689,11 @@ namespace AT
             wfsTargetInfo = bufferToFill;
         }
 
-        bool useMultithreading = m_useMultithreading.load(std::memory_order_acquire) &&
-                                 numPlayers >= MIN_PLAYERS_FOR_THREADING;
+        bool useMultithreading = (m_useMultithreading.load(std::memory_order_acquire)
+                                  || AT_PERF_OPTION(OPT_FORCE_PLAYER_MT)) &&
+                                 numPlayers >= MIN_PLAYERS_FOR_THREADING &&
+                                 numPlayers <= MAX_THREADED_PLAYERS &&
+                                 !AT_PERF_OPTION(OPT_NO_MULTITHREADING);
 
         if (!useMultithreading)
         {
@@ -673,7 +731,9 @@ namespace AT
                                            m_numVirtualSpeakers :
                                            bufferToFill.buffer->getNumChannels();
 
-            if (m_playerBuffers.size() < static_cast<size_t>(numPlayers))
+            if (m_playerBuffers.size() < static_cast<size_t>(numPlayers)
+                || m_playerBuffers[0]->getNumSamples() < bufferToFill.numSamples
+                || m_playerBuffers[0]->getNumChannels() < tempBufferChannels)
             {
                 m_playerBuffers.clear();
                 for (int i = 0; i < numPlayers; i++)
@@ -689,62 +749,37 @@ namespace AT
             for (auto& buffer : m_playerBuffers)
                 buffer->clear();
 
+            m_jobNumSamples = bufferToFill.numSamples;
             m_playersProcessed.store(0, std::memory_order_release);
+            for (int i = 0; i < numPlayers; i++)
+                m_playerJobState[i].store(PLAYER_JOB_PENDING, std::memory_order_release);
 
+            {
+            AT_PERF_SECTION(at_perf::Section::MtDispatch);
             for (int i = 0; i < numPlayers; i++)
             {
-                m_audioThreadPool.addJob([this, i, &bufferToFill]()
+                // Captures by value only: a job may still sit in the queue after this
+                // callback has returned (its player was claimed by the audio thread).
+                m_audioThreadPool.addJob([this, i]()
                 {
-                    // m_playerSnapshot is immutable for the duration of this block.
-                    AT::SpatPlayer* player = m_playerSnapshot[i];
-
-                    player->updateForNextBlock();
-
-                    if (!player->isPlaying() || !player->hasFileLoaded())
-                    {
-                        m_playersProcessed.fetch_add(1, std::memory_order_release);
-                        return;
-                    }
-
-                    juce::AudioSourceChannelInfo tempInfo;
-                    tempInfo.buffer      = m_playerBuffers[i].get();
-                    tempInfo.startSample = 0;
-                    tempInfo.numSamples  = bufferToFill.numSamples;
-
-                    player->processAndAdd(tempInfo, m_smoothedListenerPosX, m_smoothedListenerPosY, m_smoothedListenerPosZ);
-                    m_playersProcessed.fetch_add(1, std::memory_order_release);
+                    juce::ScopedNoDenormals noDenormals;
+                    AT_PERF_WORKER_SCOPE();
+                    tryProcessPlayerJob(i);
                 });
             }
+            }
 
-            // Time-based deadline: 85 % of the audio block duration.
-            // An iteration-based count would be CPU-speed dependent.
-            const double wfsBlockMs  = (bufferToFill.numSamples * 1000.0) / m_sampleRate;
-            const double wfsDeadline = juce::Time::getMillisecondCounterHiRes()
-                                       + wfsBlockMs * 0.85;
-
-            while (m_playersProcessed.load(std::memory_order_acquire) < numPlayers)
             {
-                if (juce::Time::getMillisecondCounterHiRes() > wfsDeadline)
-                {
-                    LOG_ERROR("WFS threading timeout — completing remaining players on audio thread.");
+            AT_PERF_SECTION(at_perf::Section::MtWait);
 
-                    for (int i = 0; i < numPlayers; i++)
-                    {
-                        if (m_playersProcessed.load(std::memory_order_acquire) >= i + 1)
-                            continue;
-                        AT::SpatPlayer* player = m_playerSnapshot[i];
-                        player->updateForNextBlock();
-                        if (player->isPlaying() && player->hasFileLoaded())
-                        {
-                            juce::AudioSourceChannelInfo tempInfo;
-                            tempInfo.buffer      = m_playerBuffers[i].get();
-                            tempInfo.startSample = 0;
-                            tempInfo.numSamples  = bufferToFill.numSamples;
-                            player->processAndAdd(tempInfo, m_smoothedListenerPosX, m_smoothedListenerPosY, m_smoothedListenerPosZ);
-                        }
-                    }
-                    break;
-                }
+            // The audio thread renders players too, from the end of the list, instead of
+            // spinning while the workers wake up. If no worker ever runs, it simply renders
+            // everything itself: there is no deadline and no player is rendered twice.
+            for (int i = numPlayers - 1; i >= 0; i--)
+                tryProcessPlayerJob(i);
+
+            // Only players currently being rendered by a worker are left.
+            while (m_playersProcessed.load(std::memory_order_acquire) < numPlayers)
                 juce::Thread::yield();
             }
 
@@ -811,8 +846,7 @@ namespace AT
         // the listener causes azimuth jumps → audible glitch/click.
         // processSimpleBinaural() already does this; this brings the WFS binaural
         // path to the same level.
-        for (int i = 0; i < numSamples; ++i)
-            advanceGlobalSmoothers();
+        // (global smoothers are advanced once per block in getNextAudioBlock())
 
         // ── HRTF bypass thresholds ───────────────────────────────────────────────
         //
@@ -838,7 +872,8 @@ namespace AT
 
         #ifdef AT_SPAT_ENABLE_MULTITHREADING
             if (m_numVirtualSpeakers >= MIN_SPEAKERS_FOR_HRTF_THREADING
-                && !m_hrtfThreadBuffers.empty())
+                && !m_hrtfThreadBuffers.empty()
+                && !AT_PERF_OPTION(OPT_NO_MULTITHREADING))
             {
                 const int numThreads = static_cast<int>(m_hrtfThreadBuffers.size());
 
@@ -874,6 +909,9 @@ namespace AT
                 // initialised processor while the block is in flight.
                 auto processChunk = [this, numSamples, speakersPerThread, safeN](int t)
                 {
+                    juce::ScopedNoDenormals noDenormals;
+                    AT_PERF_WORKER_SCOPE();
+
                     const int startCh = t * speakersPerThread;
                     const int endCh   = std::min(startCh + speakersPerThread, safeN);
 
@@ -1006,8 +1044,10 @@ namespace AT
         // there's no discontinuity when the source leaves the bypass zone.
         // See AT_NearFieldCorrection.h history note for why the previous
         // early-return caused audible cuts around azimuth 0.
-        if (m_isNearFieldCorrection.load(std::memory_order_relaxed))
+        if (m_isNearFieldCorrection.load(std::memory_order_relaxed)
+            && !AT_PERF_OPTION(OPT_BYPASS_NFC))
         {
+            AT_PERF_SECTION(at_perf::Section::NFC);
             m_nearFieldCorrection.processStereo(
                 m_binauralTemp.getWritePointer(0),
                 m_binauralTemp.getWritePointer(1),
@@ -1042,8 +1082,7 @@ namespace AT
         // Same "advance smoothers so azimuth reads are smoothed, not raw"
         // fix as the HRTF path — avoids azimuth jumps/clicks on fast
         // listener/speaker movement.
-        for (int i = 0; i < numSamples; ++i)
-            advanceGlobalSmoothers();
+        // (global smoothers are advanced once per block in getNextAudioBlock())
 
         float* outL = bufferToFill.buffer->getWritePointer(0, bufferToFill.startSample);
         float* outR = bufferToFill.buffer->getWritePointer(1, bufferToFill.startSample);
@@ -1074,8 +1113,7 @@ namespace AT
         const int numSamples = bufferToFill.numSamples;
         const int numPlayers = static_cast<int>(m_playerSnapshot.size());
 
-        for (int sample = 0; sample < numSamples; ++sample)
-            advanceGlobalSmoothers();
+        // (global smoothers are advanced once per block in getNextAudioBlock())
 
         for (int i = 0; i < numPlayers; ++i)
         {
@@ -1095,11 +1133,20 @@ namespace AT
 
     void SpatializationEngine::getNextAudioBlock(const juce::AudioSourceChannelInfo& bufferToFill)
     {
+        // Denormals cost ~4.6x per decaying source on x86 (measured, tools/perf Oct 2026).
+        // FTZ/DAZ is per-thread: the worker jobs below set it too.
+        juce::ScopedNoDenormals noDenormals;
+
+        AT_PERF_CALLBACK_SCOPE(bufferToFill.numSamples, m_sampleRate);
+        AT_PERF_FTZ_IF_REQUESTED();
+
         // Step 1: Drain the graveyard — destroy players removed during the previous block
         // outside the SpinLock, so their destructors don't hold the lock.
         {
+            AT_PERF_SECTION(at_perf::Section::Other);
             std::vector<std::unique_ptr<AT::SpatPlayer>> toDelete;
             {
+                AT_PERF_SECTION(at_perf::Section::Locks);
                 const juce::SpinLock::ScopedLockType lock(m_playerListLock);
                 toDelete = std::move(m_playersGraveyard);
             }
@@ -1107,6 +1154,7 @@ namespace AT
 
         // Step 2: Take an atomic snapshot of m_spatPlayers (raw pointer copies only).
         {
+            AT_PERF_SECTION(at_perf::Section::Locks);
             const juce::SpinLock::ScopedLockType lock(m_playerListLock);
             m_playerSnapshot.clear();
             m_playerSnapshot.reserve(m_spatPlayers.size());
@@ -1147,7 +1195,8 @@ namespace AT
         {
             float pos[3], rot[3], fwd[3];
             {
-                const juce::SpinLock::ScopedLockType lock(m_positionLock);
+                AT_PERF_SECTION(at_perf::Section::Locks);
+                AT_PERF_POSITION_LOCK(m_positionLock);
                 std::memcpy(pos, m_pendingListenerPosition, 3 * sizeof(float));
                 std::memcpy(rot, m_pendingListenerRotation, 3 * sizeof(float));
                 std::memcpy(fwd, m_pendingListenerForward,  3 * sizeof(float));
@@ -1249,7 +1298,8 @@ namespace AT
         {
             float srcPos[3];
             {
-                const juce::SpinLock::ScopedLockType lock(m_positionLock);
+                AT_PERF_SECTION(at_perf::Section::Locks);
+                AT_PERF_POSITION_LOCK(m_positionLock);
                 std::memcpy(srcPos, m_pendingNfcSourcePosition, 3 * sizeof(float));
             }
             m_nfcSourceDirty.store(false, std::memory_order_release);
@@ -1262,7 +1312,8 @@ namespace AT
         {
             float rRef, headRadius;
             {
-                const juce::SpinLock::ScopedLockType lock(m_positionLock);
+                AT_PERF_SECTION(at_perf::Section::Locks);
+                AT_PERF_POSITION_LOCK(m_positionLock);
                 rRef       = m_pendingNfcRRef;
                 headRadius = m_pendingNfcHeadRadius;
             }
@@ -1274,13 +1325,17 @@ namespace AT
         if (m_nfcResetRequested.exchange(false, std::memory_order_acq_rel))
             m_nearFieldCorrection.reset();
 
-        updateNearFieldCorrectionGeometry();
+        {
+            AT_PERF_SECTION(at_perf::Section::NFC);
+            updateNearFieldCorrectionGeometry();
+        }
 
         if (m_speakerTransformDirty.load(std::memory_order_acquire))
         {
             int count;
             {
-                const juce::SpinLock::ScopedLockType lock(m_positionLock);
+                AT_PERF_SECTION(at_perf::Section::Locks);
+                AT_PERF_POSITION_LOCK(m_positionLock);
                 count = m_pendingSpeakerCount;
                 std::memcpy(m_adoptPosBuf, m_pendingSpeakerPositions, count * 3 * sizeof(float));
                 std::memcpy(m_adoptRotBuf, m_pendingSpeakerRotations, count * 3 * sizeof(float));
@@ -1432,6 +1487,10 @@ namespace AT
             return;
         }
 
+        // Single place where the global smoothers advance: once per block, before any player
+        // or downmix stage reads them. Players interpolate between block start and block end.
+        advanceGlobalSmoothersForBlock(bufferToFill.numSamples);
+
         // Step 4: Audio pipeline
         if (m_isSimpleBinauralSpat)
         {
@@ -1442,8 +1501,10 @@ namespace AT
             // m_binauralTemp intermediate), so processBinauralVirtualization()'s
             // internal NFC call never runs in this code path.
             if (m_isNearFieldCorrection.load(std::memory_order_relaxed)
-                && bufferToFill.buffer->getNumChannels() >= 2)
+                && bufferToFill.buffer->getNumChannels() >= 2
+                && !AT_PERF_OPTION(OPT_BYPASS_NFC))
             {
+                AT_PERF_SECTION(at_perf::Section::NFC);
                 m_nearFieldCorrection.processStereo(
                     bufferToFill.buffer->getWritePointer(0, bufferToFill.startSample),
                     bufferToFill.buffer->getWritePointer(1, bufferToFill.startSample),
@@ -1473,12 +1534,17 @@ namespace AT
             }
 
             if (m_isBinauralVirtualization && !m_puHrtfProcessors.empty())
+            {
+                AT_PERF_SECTION(at_perf::Section::HRTF);
                 processBinauralVirtualization(bufferToFill);
+            }
         }
 
         // Step 5: Apply transition gain (fade-out / fade-in)
         if (m_isFadingToMode || m_transitionGain.isSmoothing() || m_warmupBlocksRemaining > 0)
         {
+            AT_PERF_SECTION(at_perf::Section::Output);
+
             // Pre-compute the gain ramp for this block (equal-power transition)
             const int numSamples = bufferToFill.numSamples;
             for (int i = 0; i < numSamples; ++i)
@@ -1563,6 +1629,7 @@ namespace AT
         // Step 6: Output meters
         if (bufferToFill.buffer != nullptr)
         {
+            AT_PERF_SECTION(at_perf::Section::Output);
             const int safeOutCh = std::min(m_numOutputChannels, MAX_VIRTUAL_SPEAKERS);
 
             for (int channel = 0; channel < safeOutCh
@@ -2358,7 +2425,8 @@ namespace AT
 
     void SpatializationEngine::updateNearFieldCorrectionGeometry()
     {
-        if (!m_isNearFieldCorrection.load(std::memory_order_relaxed))
+        if (!m_isNearFieldCorrection.load(std::memory_order_relaxed)
+            || AT_PERF_OPTION(OPT_BYPASS_NFC))
             return;
 
         // rVirtual: horizontal distance listener → source (XZ plane, Y=up ignored).

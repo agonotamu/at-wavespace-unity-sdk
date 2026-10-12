@@ -21,8 +21,10 @@
 // ============================================================================
 // MULTITHREADED PLAYER PROCESSING
 // ============================================================================
-// Uncomment to enable parallel WFS player processing via a thread pool.
-// Requires >= 3 active players (MIN_PLAYERS_FOR_THREADING) to activate.
+// Compiles in the thread-pool code paths: HRTF convolution threading (active) and
+// parallel WFS player processing (compiled in but OFF by default since Oct 2026 —
+// see SpatializationEngine constructor; setMultithreadingEnabled(true) re-enables it,
+// from MIN_PLAYERS_FOR_THREADING = 3 active players).
 // WARNING: may cause audio underruns on some systems (spin-wait on audio thread).
 // Leave disabled unless you have profiled a clear CPU benefit.
 

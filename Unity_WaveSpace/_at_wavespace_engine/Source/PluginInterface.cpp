@@ -10,6 +10,7 @@
 #include <mutex>
 #include <memory>
 #include "UnityLogger.h"
+#include "At_PerfProbe.h"   // macros AT_PERF_* : vides sans AT_SPAT_PERF_PROBE
 
 // ============================================================================
 // GLOBAL VARIABLES
@@ -1347,3 +1348,34 @@ EXPORT_API int CALL_CONV AT_WS_setNearFieldCorrectionRRef(float rRef, float head
     engine->setNearFieldCorrectionRRef(rRef, radius);
     return AUDIO_PLUGIN_OK;
 }
+
+// ============================================================================
+// PERFORMANCE PROBE
+// ============================================================================
+// No g_mutex here on purpose: the probe only holds relaxed atomics, and the
+// bench polls it while other API calls may be in flight.
+
+#if defined(AT_SPAT_PERF_PROBE)
+
+EXPORT_API int CALL_CONV AT_WS_getPerfStats(void* outStats, int sizeBytes)
+{
+    if (outStats == nullptr || sizeBytes < (int) sizeof(at_perf::StatsC))
+        return AUDIO_PLUGIN_ERROR;
+
+    at_perf::Probe::get().snapshot(*static_cast<at_perf::StatsC*>(outStats));
+    return AUDIO_PLUGIN_OK;
+}
+
+EXPORT_API int CALL_CONV AT_WS_resetPerfStats()
+{
+    at_perf::Probe::get().reset();
+    return AUDIO_PLUGIN_OK;
+}
+
+EXPORT_API int CALL_CONV AT_WS_setPerfOptions(unsigned int options)
+{
+    at_perf::Probe::get().setOptions(options);
+    return AUDIO_PLUGIN_OK;
+}
+
+#endif

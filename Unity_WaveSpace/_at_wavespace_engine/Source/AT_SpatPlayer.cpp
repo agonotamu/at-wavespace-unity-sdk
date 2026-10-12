@@ -11,6 +11,28 @@
 #include "AT_SpatializationEngine.h"
 #include "UnityLogger.h"
 #include "AT_SpatConfig.h"
+#include "At_PerfProbe.h"   // macros AT_PERF_* : vides sans AT_SPAT_PERF_PROBE
+
+#if defined(AT_SPAT_PERF_PROBE)
+namespace
+{
+    // OPT_SKIP_FILE_READ : bruit blanc à la place de la lecture fichier
+    // (aucune I/O, aucun lock JUCE, aucun resampling).
+    void perfFillNoise(const juce::AudioSourceChannelInfo& info)
+    {
+        static thread_local juce::uint32 seed = 0x9E3779B9u;
+        for (int ch = 0; ch < info.buffer->getNumChannels(); ++ch)
+        {
+            float* data = info.buffer->getWritePointer(ch, info.startSample);
+            for (int i = 0; i < info.numSamples; ++i)
+            {
+                seed = seed * 1664525u + 1013904223u;
+                data[i] = (static_cast<float>(seed >> 8) * (1.0f / 8388608.0f) - 1.0f) * 0.1f;
+            }
+        }
+    }
+}
+#endif
 
 namespace AT
 {
@@ -44,6 +66,11 @@ namespace AT
     {
         // Automatically stop playback before changing the file.
         stop();
+
+        // After stop(): AudioTransportSource::stop() waits for the audio thread to see the
+        // stop, which it cannot do while it is locked out of this player.
+        const juce::SpinLock::ScopedLockType sourceLock(m_sourceLock);
+        m_blockValid = false;
         releaseAudioSource();
         
         m_path = path;
@@ -189,13 +216,30 @@ namespace AT
 
     void SpatPlayer::updateForNextBlock()
     {
-        
+        AT_PERF_SECTION(at_perf::Section::Players);
+
+        const juce::SpinLock::ScopedTryLockType sourceLock(m_sourceLock);
+        if (!sourceLock.isLocked())
+            return;   // source being swapped on the main thread: skip this block
+
+        m_blockValid = false;
+
         // Only update if we have a valid audio source and buffer
-        if (m_upReaderSource != nullptr && m_puAsci != nullptr && m_puResampleSource != nullptr)
+        // m_isPrepared: a resampler that is not prepared (or was released) has an empty
+        // buffer, on which juce::ResamplingAudioSource::getNextAudioBlock() divides by zero.
+        if (m_isPrepared && m_upReaderSource != nullptr && m_puAsci != nullptr && m_puResampleSource != nullptr)
         {
             // Request the next block of audio from the resampling source
             // And apply gain on source
+#if defined(AT_SPAT_PERF_PROBE)
+            // Un joueur arrêté garde le chemin normal : AudioTransportSource::stop()
+            // attend que getNextAudioBlock() ait vu l'arrêt.
+            if (AT_PERF_OPTION(OPT_SKIP_FILE_READ) && m_transportSource.isPlaying())
+                perfFillNoise(*m_puAsci);
+            else
+#endif
             m_puResampleSource->getNextAudioBlock(*m_puAsci);
+            m_blockValid = true;
             
             // Calculate RMS meters for each channel of the audio file
             // This follows the same logic as AT_SpatializationEngine::getNextAudioBlock()
@@ -296,6 +340,12 @@ namespace AT
     void SpatPlayer::processAndAdd(const juce::AudioSourceChannelInfo& bufferToFill,
                                     float listenerX, float listenerY, float listenerZ) {
 
+        AT_PERF_SECTION(at_perf::Section::WFS);
+
+        const juce::SpinLock::ScopedTryLockType sourceLock(m_sourceLock);
+        if (!sourceLock.isLocked() || !m_blockValid)
+            return;   // no valid input block for this player (source swap in progress)
+
         // Output fade for click-free stop (triggered by stopWithFade()).
         // Applied at the OUTPUT stage — fading the input would leave the WFS
         // delay-line / HRTF convolver tail at full amplitude.
@@ -359,6 +409,7 @@ namespace AT
 
         // Update spatial parameters once per block.
         if (m_puSpatializer != nullptr) {
+            m_puSpatializer->beginBlock(bufferToFill.numSamples);
             m_puSpatializer->updateSourceParametersTarget();
         }
 
@@ -618,7 +669,14 @@ namespace AT
         for (auto sampleIndex = 0; sampleIndex < bufferToFill.numSamples; sampleIndex++)
         {
             if (m_puSpatializer != nullptr)
+            {
+#if defined(AT_SPAT_PERF_PROBE)
+                if (AT_PERF_OPTION(OPT_WFS_PARAMS_PER_BLOCK))
+                    m_puSpatializer->perfAdvanceSourceSmoothersPerBlock(sampleIndex, bufferToFill.numSamples);
+                else
+#endif
                 m_puSpatializer->advanceSourceSmoothers();
+            }
 
             // 3D / WFS mode: push the mono source sample into the delay line.
             if (m_is3D && m_puSpatializer != nullptr &&
@@ -751,6 +809,9 @@ namespace AT
 
     void SpatPlayer::prepareToPlay(int samplesPerBlock, double sampleRate)
     {
+        const juce::SpinLock::ScopedLockType sourceLock(m_sourceLock);
+        m_blockValid = false;
+
         // Store audio processing parameters for later use
         m_samplesPerBlock = samplesPerBlock;
         m_sampleRate = sampleRate;
@@ -815,6 +876,10 @@ namespace AT
 
     void SpatPlayer::releaseResources()
     {
+        const juce::SpinLock::ScopedLockType sourceLock(m_sourceLock);
+        m_blockValid = false;
+        m_isPrepared = false;   // before releasing: the audio thread must not touch a released resampler
+
         // Release resources allocated by the transport source
         // This frees any internal buffers or threads
         m_transportSource.releaseResources();
