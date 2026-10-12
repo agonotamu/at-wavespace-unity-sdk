@@ -315,10 +315,10 @@ Tooling added:
   (`tools/perf/engine/` and `_at_wavespace_engine/Source/`).
 - Bench `tools/perf/bench/at_spat_bench.exe`: `--downmix` for a stereo device, `--list-devices`,
   `--perf nomt,blockwfs,ftz,…`. It plays sound: use `--master-db -60` for a near-silent run.
-- Listening test scene `Assets/MyAssets/TestClaude/TestClaude_Orbit.unity`: N copies of
+- Listening test scene `Assets/At_WaveSpace/TestClaude/TestClaude_Orbit.unity`: N copies of
   `Audio/Speech_sample.wav` orbiting the listener at 9 m, count adjustable in Play mode (up to 200).
   `TestClaude_Static100.unity` (menu TestClaude) is the variant with 100 pre-created, disabled players.
-  Everything Claude adds on the Unity side goes in `Assets/MyAssets/TestClaude/`.
+  Everything Claude adds on the Unity side goes in `Assets/At_WaveSpace/TestClaude/`.
 - A crash in the Unity Editor can be resolved to function names without a PDB: rebuild the same
   Release configuration with `-DCMAKE_SHARED_LINKER_FLAGS=/MAP`, check that `.text` has the same size,
   then look up `address − module base` (both in `Editor.log`) in the `.map`.

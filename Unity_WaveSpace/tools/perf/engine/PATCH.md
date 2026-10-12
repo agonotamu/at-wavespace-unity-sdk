@@ -106,7 +106,7 @@ Ces changements ne sont pas derrière la macro : ils font partie du moteur.
 | Jobs par joueur à réclamation unique (`m_playerJobState`, `tryProcessPlayerJob`), thread audio qui travaille, plus de délai de 85 % ni de capture par référence | `AT_SpatializationEngine.h/.cpp` | 32 sources à 48 %, aucun overrun ; séquentiel : overruns à 12 (`…_1322_mt_corrige`) |
 | Verrou `m_sourceLock` autour du remplacement du lecteur d'un joueur | `AT_SpatPlayer.h/.cpp` | plantage (division par zéro dans `juce::ResamplingAudioSource`) à l'ajout d'une source à 256 HP virtuels ; disparu au bench et dans Unity |
 
-À l'écoute dans `Assets/MyAssets/TestClaude/TestClaude_Orbit.unity` (downmix HRTF) : environ 10 sources
+À l'écoute dans `Assets/At_WaveSpace/TestClaude/TestClaude_Orbit.unity` (downmix HRTF) : environ 10 sources
 avant, 18–19 avec les deux premiers correctifs seuls (multithreading des joueurs désactivé), puis
 100 à 32 canaux, 48 à 64 canaux et 20 à 128 canaux avec l'ensemble.
 

@@ -17,7 +17,8 @@ ou de l'intégration Unity.
   copie faite automatiquement par l'étape post-build de `_at_wavespace_engine/CMakeLists.txt`
 - Sorties de build : `_at_wavespace_engine/Builds/VisualStudio2022/` (DLL), `Builds/VisualStudio2022_Console/` (console)
 - À ignorer : `Library/`, `Temp/`, `Logs/`, `obj/`, `_at_wavespace_engine/Builds/`, `_backup/`
-- Outils perf : `tools/perf/` (protocole : `tools/perf/PERF.md`)
+- Outils perf : `tools/perf/` (protocole : `tools/perf/PERF.md`, état de l'instrumentation : `tools/perf/engine/PATCH.md`)
+- Scènes et scripts de test ajoutés par Claude : `Assets/At_WaveSpace/TestClaude/`
 
 ## Build (Windows, Visual Studio 2022)
 - Lancer Claude Code depuis **Developer PowerShell for VS 2022** (MSVC + CMake dans le PATH).
@@ -35,6 +36,15 @@ ou de l'intégration Unity.
 - L'éditeur Unity verrouille la DLL : fermer Unity avant de reconstruire, ou recopier la DLL ensuite.
   Ne jamais écraser la DLL dans `Assets/Plugins` pendant que Unity tourne.
 
+## Build (macOS, Xcode)
+- JUCE attendu dans `~/JUCE`. Même principe : `cmake --preset <preset>` puis `cmake --build --preset <preset>`, depuis `_at_wavespace_engine/`.
+- Presets : `macos-release` / `macos-debug` (dylib universel x86_64 + arm64, sortie `Builds/MacOSX/`),
+  `macos-console-release` / `macos-console-debug` (`TestAppConsole`). Pas de preset probe : ajouter `-DAT_SPAT_PERF_PROBE=ON -DAT_SPAT_COPY_TO_UNITY=OFF`.
+- Le post-build copie et signe le dylib dans `Assets/At_WaveSpace/Plugins/MacOSX/`.
+- État au 12 oct. 2026 : les correctifs de performance d'octobre n'ont été compilés et écoutés que sous Windows.
+  Le dylib du dépôt contient encore l'ancien moteur ; le premier build macOS de ce code reste à faire et à valider à l'écoute.
+- Les scripts de `tools/perf/scripts/` sont en PowerShell ; le bench C++ est prévu pour macOS mais n'y a jamais été compilé.
+
 ## Règles temps réel (callback audio `getNextAudioBlock` et tout ce qu'il appelle)
 - Aucune allocation, aucun lock bloquant, aucune I/O, aucun log synchrone.
 - `juce::ScopedNoDenormals` en tête du callback et dans chaque thread worker DSP.
@@ -47,3 +57,10 @@ ou de l'intégration Unity.
 - Changements minimaux et ciblés ; toute instrumentation derrière une macro (`AT_SPAT_PERF_PROBE`).
 - Garder la cohérence C++ ↔ C# (`MAX_VIRTUAL_SPEAKERS = 1024`, signatures d'export, return codes 0/1).
 - Ne pas committer sans demande explicite.
+- Tout ce que Claude crée côté Unity (scripts, scènes, outils d'éditeur) va dans `Assets/At_WaveSpace/TestClaude/`.
+  Seule exception : les fichiers d'état de scène, que le projet ne lit que dans `Assets/StreamingAssets/<scène>_States.state`.
+- Validation à l'écoute : scène `TestClaude_Orbit` (N sources de parole en orbite autour de l'auditeur, nombre réglable
+  en mode Play). L'utilisateur indique à combien de sources l'audio décroche. Reconstruire la bibliothèque Unity fermé avant un test.
+- Le dossier de travail n'est pas un dépôt git : faire une sauvegarde (`saveLib.bat` sous Windows) avant de modifier le moteur.
+- Publication : l'utilisateur copie les sources vers son clone de `agonotamu/at-wavespace-unity-sdk` et committe lui-même
+  (`updateGitSource.bat` sous Windows, propre à ce poste et jamais copié dans le dépôt). Ne faire ni commit ni push à sa place.
