@@ -41,8 +41,11 @@ ou de l'intégration Unity.
 - Presets : `macos-release` / `macos-debug` (dylib universel x86_64 + arm64, sortie `Builds/MacOSX/`),
   `macos-console-release` / `macos-console-debug` (`TestAppConsole`). Pas de preset probe : ajouter `-DAT_SPAT_PERF_PROBE=ON -DAT_SPAT_COPY_TO_UNITY=OFF`.
 - Le post-build copie et signe le dylib dans `Assets/At_WaveSpace/Plugins/MacOSX/`.
-- État au 12 oct. 2026 : les correctifs de performance d'octobre n'ont été compilés et écoutés que sous Windows.
-  Le dylib du dépôt contient encore l'ancien moteur ; le premier build macOS de ce code reste à faire et à valider à l'écoute.
+- État au 12 oct. 2026 : premier build macOS des correctifs de performance d'octobre fait avec `macos-release`,
+  sans aucune modification de source ; le dylib du dépôt contient ce moteur. Validé à l'écoute dans `TestClaude_Orbit` :
+  200 sources à 32 canaux (maximum de la scène, limite non atteinte), 140 à 64, 60 à 128, 30 à 256, 15 à 512.
+  Machine : MacBook Pro `Mac16,1`, Apple M4 (4 cœurs performance + 6 efficacité), 16 Go, macOS 15.7.2, Unity 6000.3.0f1 ;
+  sortie stéréo intégrée en downmix HRTF, 48 kHz, buffer 512.
 - Les scripts de `tools/perf/scripts/` sont en PowerShell ; le bench C++ est prévu pour macOS mais n'y a jamais été compilé.
 
 ## Règles temps réel (callback audio `getNextAudioBlock` et tout ce qu'il appelle)

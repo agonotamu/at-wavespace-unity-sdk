@@ -327,3 +327,21 @@ Tooling added:
   in the bench until a synchronous `AT_WS_refreshDevices(1, 0)`.
 - `Unity_WaveSpace_oldVersion/` (inside the project root, ignored by Unity) holds an older engine and
   project used for comparison; it was no faster.
+
+### macOS build and listening test (12 Oct 2026)
+- First macOS build of the October code: `macos-release` compiled without any source or CMake change
+  (universal x86_64 + arm64, ad hoc signed, 64 `AT_WS_*` exports, loads in both architectures).
+- Machine: MacBook Pro `Mac16,1`, Apple M4 (10 cores: 4 performance + 6 efficiency, no SMT), 16 GB,
+  macOS 15.7.2, Unity 6000.3.0f1, Xcode 26.1.1 / AppleClang, arm64 slice.
+- Test settings, read from `StreamingAssets/TestClaude_Orbit_States.state` after the last run: output
+  "Haut-parleurs MacBook Pro" (2 channels, built-in), binaural virtualization on (HRTF downmix of the
+  virtual speakers, `QU_KEMAR_anechoic_3m`, truncated), 48 kHz, buffer 512, circle layout, speaker mask,
+  prefilter and WFS gain on, NFC off. Same stereo-downmix situation as the Dell measurements.
+- Listening limits in `TestClaude_Orbit` (reported by the user): 200 sources @ 32 virtual speakers
+  (scene maximum, limit not reached), 140 @ 64, 60 @ 128, 30 @ 256, 15 @ 512.
+- That is ≈7 700 (source, speaker) pairs from 128 to 512 speakers and ≈9 000 at 64, against ≈3 000 on
+  the Dell i9-11950H. The pair count stays constant up to 512 speakers: the "one player's own time is a
+  floor" limit seen on Windows at 256 speakers (overruns from 3 sources) does not show up here.
+- `At_MasterOutput.cs` still declares a `DllImport` for `AT_WS_setIsBinauralVirtualization`, which is
+  not exported (never called). `Main.cpp` is compiled into the library by the `Source/*.cpp` glob in
+  `CMakeLists.txt`; its `main` is a local symbol.
